@@ -90,7 +90,7 @@ SERVO_BEARING_SIGN = -1.0   # flip to +1.0 if turns still go the wrong way
 GYRO_HEADING_AXIS = "gy"
 
 # Detection / Camera
-CAMERA_INDEX = 2          # set to your Brio's /dev/videoN (shifts 0/2)
+CAMERA_INDEX = 0          # set to your Brio's /dev/videoN (shifts 0/2)
 CAMERA_WIDTH = 320
 CAMERA_HEIGHT = 240
 CAMERA_FOCAL_LENGTH = 300
