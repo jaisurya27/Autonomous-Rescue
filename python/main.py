@@ -63,19 +63,15 @@ def control_loop():
         fs = sensor_reader.get_latest()
         img = grab_frame()
 
-        # heading-rate from YOUR pitch-axis gyro
-        gyro_turn = fs.gy if fs.valid else 0.0
+        # POSE comes from the motion-model + gyro odometry (NOT VO translation,
+        # which drifts). Advance it using the gyro and what the navigator was
+        # commanding (nav.motion is last loop's command — what actually ran).
+        dead_reck.update(nav.motion, fs.gy if fs.valid else 0.0, dt)
+        px, py, pth = dead_reck.pose.x, dead_reck.pose.y, dead_reck.pose.theta
 
+        # VO still runs for the camera overlay + person distance estimate only.
         if img is not None:
-            dx, dy, dth = vo.process_frame(img, imu_gz=gyro_turn, dt=dt)
-            dead_reck.pose.x = vo.x; dead_reck.pose.y = vo.y
-            dead_reck.pose.theta = vo.theta
-            dead_reck.pose.speed = math.sqrt(dx*dx+dy*dy)/max(dt,0.001)
-            step = math.sqrt(dx*dx+dy*dy)
-            dead_reck._total_distance += step
-            if dead_reck._total_distance - dead_reck._last_breadcrumb_dist >= BREADCRUMB_INTERVAL:
-                dead_reck.breadcrumbs.append((vo.x, vo.y, vo.theta))
-                dead_reck._last_breadcrumb_dist = dead_reck._total_distance
+            vo.process_frame(img, imu_gz=fs.gy if fs.valid else 0.0, dt=dt)
             dc += 1
             if dc % 5 == 0: detector.feed_frame(img)
 
@@ -85,12 +81,12 @@ def control_loop():
         head_bearing = math.radians(nav.servo_angle - SERVO_CENTER) * SERVO_BEARING_SIGN
 
         if fs.valid and fs.tof_distance > 0.01:
-            occ_grid.update_from_distance(vo.x, vo.y, vo.theta, fs.tof_distance,
+            occ_grid.update_from_distance(px, py, pth, fs.tof_distance,
                                           sensor_angle_offset=head_bearing)
-        occ_grid.update_robot_position(vo.x, vo.y)
+        occ_grid.update_robot_position(px, py)
         # Only log CONFIRMED people (seen several frames in a row) as threats.
         for det in detector.get_confirmed():
-            det = detector.project_to_world(det, vo.x, vo.y, vo.theta, head_bearing)
+            det = detector.project_to_world(det, px, py, pth, head_bearing)
             occ_grid.add_threat(det.world_x, det.world_y, det.label, det.confidence)
 
         # Only react (pause to classify) to confirmed people, and only when the
@@ -99,14 +95,14 @@ def control_loop():
         left, right = nav.compute_command(
             fs.tof_distance if fs.valid else 0.0,
             fs.us_distance  if fs.valid else 0.0,
-            vo.x, vo.y, vo.theta, has_det)
+            px, py, pth, has_det)
         sensor_reader.send_command(left, right)
 
         lc += 1; now = time.time()
         if now - ft >= 1.0:
             status["fps"] = round(lc/(now-ft),1); lc = 0; ft = now
         status.update({"state":nav.state_name, "speed":round(dead_reck.pose.speed,3),
-            "heading":round(vo.get_heading_deg(),1),
+            "heading":round(math.degrees(pth) % 360, 1),
             "distance_traveled":round(dead_reck.total_distance,2),
             "distance_to_start":round(dead_reck.distance_to_start(),2),
             "detections":len(occ_grid.threats),
@@ -158,7 +154,10 @@ def camera_frame():
 @app.route("/api/action", methods=["POST"])
 def action():
     act = request.get_json().get("action","")
-    if act == "explore": nav.start_exploration()
+    if act == "explore":
+        dead_reck.reset()                 # zero pose + re-estimate gyro bias at rest
+        vo.x = vo.y = vo.theta = 0.0
+        nav.start_exploration()
     elif act == "return": nav.start_return(dead_reck.breadcrumbs)
     elif act == "stop":
         nav.stop(); sensor_reader.send_command(0,0)

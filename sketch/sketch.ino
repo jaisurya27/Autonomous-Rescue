@@ -4,13 +4,14 @@
 // -----------------------------------------------------------------------------
 // Bridge interface expected by the Python brain:
 //   read_sensors() -> CSV: ax,ay,az,gx,gy,gz,tof_mm,us_cm,temp_c
-//                     (us_cm is sent as 0/clear since you have no HC-SR04;
-//                      the Modulino ToF covers distance)
+//                     us_cm = front HC-SR04 (body-fixed, always forward).
+//                     tof_mm = Modulino ToF on the SERVO HEAD (pans).
 //   set_motors(left,right) -> signed PWM, your TB6612 driver
 //   set_servo(deg)         -> pan servo (library-free pulse)
 //   get_servo()            -> current servo angle
 //
 // YOUR confirmed pins: PWMA=5 PWMB=6 AIN1=7 BIN1=8 STBY=3 SERVO=11
+//   Front HC-SR04 (Elegoo V4): TRIG=13, ECHO=12. If us reads 0 always, swap them.
 // Movement gyro is on getPitch() (your vertical mount). Modulino on Wire1.
 
 #include <Arduino_RouterBridge.h>
@@ -20,6 +21,10 @@ const int PWMA = 5, PWMB = 6, AIN1 = 7, BIN1 = 8, STBY = 3;
 const int LEFT_FWD = HIGH, RIGHT_FWD = HIGH;
 const int SERVO_PIN = 11, SERVO_MIN = 20, SERVO_MAX = 160;
 
+// Front HC-SR04 (body-fixed). Elegoo V4 standard; swap if us always reads 0.
+const int US_TRIG = 13, US_ECHO = 12;
+const unsigned long US_TIMEOUT_US = 12000;   // ~2 m cap (limits servo jitter)
+
 ModulinoMovement imu;
 ModulinoDistance tof;
 ModulinoThermo   thermo;
@@ -27,7 +32,7 @@ ModulinoThermo   thermo;
 bool has_imu=false, has_tof=false, has_thermo=false;
 
 float g_ax=0,g_ay=0,g_az=0,g_gx=0,g_gy=0,g_gz=0;
-float g_tof_mm=0, g_temp_c=0;
+float g_tof_mm=0, g_temp_c=0, g_us_cm=0;
 
 int servoAngle = 90;
 volatile int servoPulseUs = 1500;
@@ -63,12 +68,22 @@ void servoPulse() {
     digitalWrite(SERVO_PIN, LOW);
 }
 
+// ---- front ultrasonic (HC-SR04); cm, 0 = no echo/out of range ----
+float readUltrasonicCm() {
+    digitalWrite(US_TRIG, LOW);  delayMicroseconds(2);
+    digitalWrite(US_TRIG, HIGH); delayMicroseconds(10);
+    digitalWrite(US_TRIG, LOW);
+    unsigned long dur = pulseIn(US_ECHO, HIGH, US_TIMEOUT_US);
+    if (dur == 0) return 0.0;
+    return dur / 58.0;                  // ~58 us per cm round-trip
+}
+
 // ---- sensors (CSV in the order their Python expects) ----
 String read_sensors() {
     String s = "";
     s += String(g_ax,4); s += ","; s += String(g_ay,4); s += ","; s += String(g_az,4); s += ",";
     s += String(g_gx,2); s += ","; s += String(g_gy,2); s += ","; s += String(g_gz,2); s += ",";
-    s += String(g_tof_mm,1); s += ","; s += String(0.0,1); s += ","; s += String(g_temp_c,1);
+    s += String(g_tof_mm,1); s += ","; s += String(g_us_cm,1); s += ","; s += String(g_temp_c,1);
     return s;
 }
 
@@ -79,6 +94,7 @@ void refreshSensors() {
     }
     if (has_tof && tof.available()) g_tof_mm = tof.get();
     if (has_thermo) g_temp_c = thermo.getTemperature();
+    g_us_cm = readUltrasonicCm();
 }
 
 void setup() {
@@ -88,6 +104,8 @@ void setup() {
     set_motors(0,0);
     pinMode(SERVO_PIN,OUTPUT);
     applyAngle(90);
+    pinMode(US_TRIG,OUTPUT); pinMode(US_ECHO,INPUT);
+    digitalWrite(US_TRIG,LOW);
 
     Modulino.begin();
     has_imu    = imu.begin();
