@@ -259,7 +259,7 @@ class Navigator:
             if now < self._stuck_rev_until:
                 return self._reverse()
             self._stuck_reversing = False
-            self._start_sweep(self._rtheta, rx, ry, full=True)
+            self._start_sweep(self._rtheta, rx, ry)   # same L/C/R scan after reversal
             self._stuck_ref_pos = (rx, ry)
             self._stuck_ref_t   = now
             return None
@@ -319,11 +319,8 @@ class Navigator:
 
         # ── CRUISE ──────────────────────────────────────────────────────────
         if self._phase == "cruise":
-            # Full 360° survey requested (start of exploration or after stuck-backup)
-            if self._pending_survey:
+            if self._pending_survey:   # reserved flag, currently unused
                 self._pending_survey = False
-                self._start_sweep(rtheta, rx, ry, full=True)
-                return MOTOR_STOP, MOTOR_STOP
 
             if detections:
                 self.state = NavState.APPROACH
@@ -402,9 +399,8 @@ class Navigator:
         if self._phase == "backup":
             if now < self._backup_until:
                 return self._reverse()
-            # After backing up, do a full 360° survey — need to understand the new
-            # position fully before committing to another direction.
-            self._start_sweep(rtheta, rx, ry, full=True)
+            # After backing up, do the same L/C/R scan from the new position.
+            self._start_sweep(rtheta, rx, ry)
             return MOTOR_STOP, MOTOR_STOP
 
         # fallback
