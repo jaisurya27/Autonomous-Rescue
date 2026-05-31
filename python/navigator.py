@@ -109,8 +109,12 @@ class Navigator:
         self._servo_scan_t     = 0.0
 
         # Forward ToF cache: only updated when servo is near centre.
-        # _is_blocked() uses this so panned servo readings don't cause false stops.
         self._tof_forward = 99.0
+
+        # Best direction seen during cruise servo scan.
+        # Updated continuously while cruising; consumed by the next sweep.
+        self._cruise_best_h     = None   # world heading of best recent scan reading
+        self._cruise_best_score = 0.0    # its score
 
         # return
         self._return_path          = []
@@ -170,6 +174,8 @@ class Navigator:
         self._cruise_servo_dir     = 1
         self._servo_scan_t         = 0.0
         self._tof_forward          = 99.0
+        self._cruise_best_h        = None
+        self._cruise_best_score    = 0.0
         self.motion                = "stop"
         self._set_servo(SERVO_CENTER)
 
@@ -340,10 +346,9 @@ class Navigator:
             else:
                 speed = MOTOR_BASE_SPEED
 
-            # Servo always scans L→C→R while moving — builds occupancy grid
-            # and gives the navigator live ToF+camera readings in all directions.
-            # _is_blocked uses _tof_forward (cached when near centre) so panned
-            # readings no longer cause false obstacle stops.
+            # Servo scans L→C→R while moving — builds occupancy grid and
+            # records the best clear direction seen, which the next sweep can
+            # use immediately instead of scanning from scratch.
             if now - self._servo_scan_t >= SERVO_SCAN_INTERVAL:
                 self._servo_scan_t = now
                 new_angle = self.servo_angle + self._cruise_servo_dir * SERVO_SCAN_STEP_DEG
@@ -354,6 +359,13 @@ class Navigator:
                     new_angle = SERVO_RIGHT
                     self._cruise_servo_dir = 1
                 self._set_servo(int(new_angle))
+
+                # Record best clear direction seen during cruise scan
+                scan_score = self._front_clearance(tof, us)
+                if scan_score > self._cruise_best_score:
+                    offset_rad = math.radians((self.servo_angle - SERVO_CENTER) * SERVO_BEARING_SIGN)
+                    self._cruise_best_h     = _wrap(rtheta + offset_rad)
+                    self._cruise_best_score = scan_score
 
             self._sweep_attempts = 0
             self.motion = "forward"
@@ -420,6 +432,27 @@ class Navigator:
         self._sweep_attempts += 1
         moved = math.hypot(rx - self._sweep_ref_pos[0], ry - self._sweep_ref_pos[1])
 
+        # If the cruise servo scan already found a clear direction before the obstacle
+        # stop, use it immediately — skip the sweep entirely.
+        if (self._cruise_best_h is not None and
+                self._cruise_best_score >= GREEDY_COMMIT_SCORE):
+            back_h   = _wrap(rtheta + math.pi)
+            not_back = abs(_ang_diff(self._cruise_best_h, back_h)) > math.radians(30)
+            if not_back:
+                print(f"[nav] cruise scan → instant commit "
+                      f"{math.degrees(self._cruise_best_h):.0f}° "
+                      f"(score={self._cruise_best_score:.2f})")
+                self._commit_target    = self._cruise_best_h
+                self._phase_t          = now
+                self._phase            = "commit"
+                self._cruise_best_h    = None
+                self._cruise_best_score = 0.0
+                self.motion = "stop"
+                return
+
+        self._cruise_best_h    = None   # reset for next cruise leg
+        self._cruise_best_score = 0.0
+
         if self._sweep_attempts == 1:
             self._sweep_ref_pos = (rx, ry)
         elif self._sweep_attempts >= MAX_SWEEP_ATTEMPTS and moved < 0.08:
@@ -459,6 +492,24 @@ class Navigator:
         if self._servo_step == 0 and self._settle_t is None:
             err = _ang_diff(self._sweep_target_h, rtheta)
             timed_out = (now - self._step_start_t) > PIVOT_STEP_TIMEOUT
+
+            # Opportunistic commit during pivot:
+            # While rotating, _tof_forward reflects whatever heading the car
+            # currently faces (servo is at centre). If that heading is already
+            # clear, commit immediately — no need to finish the rotation.
+            if abs(err) > HEADING_TOLERANCE:   # still rotating
+                back_h    = _wrap(self._sweep_start_h + math.pi)
+                not_back  = abs(_ang_diff(rtheta, back_h)) > math.radians(30)
+                if not_back and self._tof_forward >= GREEDY_COMMIT_SCORE:
+                    print(f"[nav] opportunistic commit during pivot "
+                          f"→ {math.degrees(rtheta):.0f}° (tof={self._tof_forward:.2f}m)")
+                    self._commit_target = rtheta
+                    self._phase_t       = now
+                    self._phase         = "commit"
+                    self._sweep_samples = []
+                    self.motion         = "stop"
+                    return MOTOR_STOP, MOTOR_STOP
+
             if abs(err) > HEADING_TOLERANCE and not timed_out:
                 return self._pivot(+1 if err > 0 else -1)
             # car reached angle — move servo to first position and start settle
