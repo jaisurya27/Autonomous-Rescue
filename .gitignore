@@ -1,0 +1,28 @@
+# Build output
+build/
+*.bin
+*.elf
+*.hex
+*.o
+*.a
+
+# PlatformIO
+.pio/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.vscode/
+*.swp
+
+# Arduino CLI build cache
+.cache/
+
+# core dumps
+core
+core.*

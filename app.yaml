@@ -1,0 +1,7 @@
+# Recon Rover — autonomous recon with visual odometry, occupancy-grid mapping,
+# person detection, and breadcrumb return-to-base. Their advanced brain on your
+# proven hardware (TB6612 motors, library-free pan servo, Modulino ToF+IMU).
+name: Recon Rover
+icon: 🛰️
+ports: [7000]
+bricks: []
