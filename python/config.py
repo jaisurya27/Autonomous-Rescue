@@ -30,8 +30,7 @@ MOTOR_TURN_SPEED = 65     # in-place pivot — needs more torque than forward; w
 MOTOR_STOP = 0
 
 # --- Recon / obstacle avoidance ---
-US_STOP_DISTANCE      = 0.18   # kept for dashboard display only — not used for obstacle logic
-TOF_STOP_DISTANCE     = 0.20   # ToF hard stop (m). ToF is primary obstacle sensor.
+TOF_STOP_DISTANCE     = 0.20   # ToF hard stop (m). Sole obstacle sensor (US removed).
 TOF_WARN_DISTANCE     = 0.45   # ToF slow-down zone (m): car decelerates between here and stop distance
 RETURN_TOF_STOP       = 0.20   # ToF obstacle threshold during return
 SWEEP_SETTLE_S        = 0.45   # wait after each servo/pivot step before reading
@@ -48,7 +47,6 @@ STUCK_MOVE_THRESHOLD  = 0.04   # m — below this over STUCK_TIMEOUT = stuck
 STUCK_REVERSE_TIME    = 1.5    # s reverse when stuck is detected (longer = more clearance)
 MAX_SWEEP_ATTEMPTS    = 2      # after this many sweeps without moving, force reverse
 RETURN_TURN_TIMEOUT   = 4.0    # s max time to complete one turn step during return
-RETURN_US_STOP        = 0.10   # obstacle threshold during return (m)
 # Camera path vision: only for person detection overlays, NOT for obstacle stop.
 CAM_OBSTACLE_VARIANCE = 400    # kept for PathVision display, no longer triggers sweep
 # Person approach

@@ -36,7 +36,7 @@ camera = None; camera_lock = threading.Lock()
 latest_frame = None; frame_lock = threading.Lock()
 nav_lock = threading.Lock()   # guards nav state changes between Flask + control loop
 status = {"state":"idle","speed":0,"heading":0,"distance_traveled":0,
-          "distance_to_start":0,"detections":0,"fps":0,"us":0,
+          "distance_to_start":0,"detections":0,"fps":0,
           "vo_matches":0,"vo_inliers":0}
 
 def _emergency_stop():
@@ -141,7 +141,6 @@ def control_loop():
         with nav_lock:
             left, right = nav.compute_command(
                 fs.tof_distance if fs.valid else 0.0,
-                fs.us_distance  if fs.valid else 0.0,
                 px, py, pth, confirmed,
                 cam_blocked      = path_vision.path_blocked,
                 cam_left_score   = path_vision.left_score,
@@ -172,7 +171,6 @@ def control_loop():
 
         status.update({"state":nav.state_name, "speed":round(dead_reck.pose.speed,3),
             "heading":round(math.degrees(pth) % 360, 1),
-            "us":round(fs.us_distance * 100, 1) if fs.valid else 0,
             "tof":round(fs.tof_distance * 100, 1) if fs.valid else 0,
             "cam_blocked": path_vision.path_blocked,
             "phase": _phase,

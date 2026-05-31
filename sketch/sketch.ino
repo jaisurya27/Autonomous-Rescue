@@ -26,11 +26,7 @@ const int GREEN_PIN = A1;
 const int BLUE_PIN  = A2;
 const int BUZZER    = 10;
 
-// Front HC-SR04 (body-fixed). Elegoo V4 standard; swap if us always reads 0.
-const int US_TRIG = 13, US_ECHO = 12;
-const unsigned long US_TIMEOUT_US = 15000;   // ~2.5 m cap
-const float US_MAX_CM    = 250.0;            // clamp: anything above this is noise
-const float US_MAX_JUMP  = 100.0;            // reject single-step jumps > this cm
+// HC-SR04 removed — us_cm field in CSV is always 0.0
 
 ModulinoMovement imu;
 ModulinoDistance tof;
@@ -39,13 +35,12 @@ ModulinoThermo   thermo;
 bool has_imu=false, has_tof=false, has_thermo=false;
 
 float g_ax=0,g_ay=0,g_az=0,g_gx=0,g_gy=0,g_gz=0;
-float g_tof_mm=0, g_temp_c=0, g_us_cm=0;
+float g_tof_mm=0, g_temp_c=0;
 
 int servoAngle = 90;
 volatile int servoPulseUs = 1500;
-unsigned long lastRefresh = 0, lastServo = 0, lastUS = 0, lastLED = 0;
+unsigned long lastRefresh = 0, lastServo = 0, lastLED = 0;
 const unsigned long REFRESH_MS = 50;
-const unsigned long US_INTERVAL_MS = 100;  // read US no faster than 10 Hz
 
 // ---- indicator state ----
 // 0=off  1=explore(solid blue)  2=sweep(blink red+beep)
@@ -205,26 +200,12 @@ void updateIndicator() {
     }
 }
 
-// ---- front ultrasonic (HC-SR04); cm, 0 = no echo/out of range ----
-float readUltrasonicCm() {
-    digitalWrite(US_TRIG, LOW);  delayMicroseconds(2);
-    digitalWrite(US_TRIG, HIGH); delayMicroseconds(10);
-    digitalWrite(US_TRIG, LOW);
-    unsigned long dur = pulseIn(US_ECHO, HIGH, US_TIMEOUT_US);
-    if (dur == 0) return 0.0;
-    float cm = dur / 58.0;
-    if (cm > US_MAX_CM) return 0.0;                          // clamp noise
-    if (g_us_cm > 0.0 && fabsf(cm - g_us_cm) > US_MAX_JUMP) // debounce big jump
-        return g_us_cm;
-    return cm;
-}
-
 // ---- sensors (CSV in the order their Python expects) ----
 String read_sensors() {
     String s = "";
     s += String(g_ax,4); s += ","; s += String(g_ay,4); s += ","; s += String(g_az,4); s += ",";
     s += String(g_gx,2); s += ","; s += String(g_gy,2); s += ","; s += String(g_gz,2); s += ",";
-    s += String(g_tof_mm,1); s += ","; s += String(g_us_cm,1); s += ","; s += String(g_temp_c,1);
+    s += String(g_tof_mm,1); s += ","; s += String(0.0,1); s += ","; s += String(g_temp_c,1);
     return s;
 }
 
@@ -246,9 +227,6 @@ void setup() {
     set_motors(0,0);
     pinMode(SERVO_PIN,OUTPUT);
     applyAngle(90);
-    pinMode(US_TRIG,OUTPUT); pinMode(US_ECHO,INPUT);
-    digitalWrite(US_TRIG,LOW);
-
     pinMode(RED_PIN,OUTPUT); pinMode(GREEN_PIN,OUTPUT); pinMode(BLUE_PIN,OUTPUT);
     pinMode(BUZZER,OUTPUT);
     set_rgb(0,0,0); noTone(BUZZER);
@@ -271,8 +249,6 @@ void loop() {
     unsigned long now = millis();
     if (now - lastServo >= 20)           { lastServo = now;   servoPulse(); }
     if (now - lastRefresh >= REFRESH_MS) { lastRefresh = now; refreshSensors(); }
-    // US before Bridge so pulseIn never blocks mid-call (prevents heap corruption).
-    if (now - lastUS >= US_INTERVAL_MS)  { lastUS = now; g_us_cm = readUltrasonicCm(); }
     updateTune();
     if (g_tune_id == 0) updateIndicator();  // don't let indicator beeps fight the tune
     Bridge.update();

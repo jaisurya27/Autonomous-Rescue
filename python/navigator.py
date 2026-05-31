@@ -21,7 +21,6 @@ import math, time
 from enum import Enum
 from config import (MOTOR_BASE_SPEED, MOTOR_SLOW_SPEED, MOTOR_TURN_SPEED, MOTOR_REVERSE_SPEED, MOTOR_STOP,
                     TOF_STOP_DISTANCE, TOF_WARN_DISTANCE, RETURN_TOF_STOP,
-                    US_STOP_DISTANCE,
                     SWEEP_SETTLE_S, MIN_CLEARANCE, PIVOT_STEP_TIMEOUT,
                     BACKUP_TIME, EXPLORATION_TIMEOUT,
                     STUCK_TIMEOUT, STUCK_MOVE_THRESHOLD, STUCK_REVERSE_TIME,
@@ -191,7 +190,7 @@ class Navigator:
 
     # ── main entry ───────────────────────────────────────────────────────────
 
-    def compute_command(self, tof, us, rx, ry, rtheta, detections,
+    def compute_command(self, tof, rx, ry, rtheta, detections,
                         cam_blocked=False, cam_left_score=0.5, cam_right_score=0.5,
                         cam_center_score=0.5):
         self._rtheta           = rtheta
@@ -221,12 +220,12 @@ class Navigator:
                 return cmd
 
         if self.state == NavState.RETURN:
-            return self._return_drive(tof, us, rx, ry, rtheta)
+            return self._return_drive(tof, rx, ry, rtheta)
 
         if self.state == NavState.APPROACH:
-            return self._approach_drive(tof, us, detections, rx, ry, rtheta)
+            return self._approach_drive(tof, detections, rx, ry, rtheta)
 
-        return self._explore_drive(tof, us, rx, ry, rtheta, detections, cam_blocked)
+        return self._explore_drive(tof, rx, ry, rtheta, detections, cam_blocked)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -244,12 +243,12 @@ class Navigator:
         self.motion = "stop"
         return -MOTOR_REVERSE_SPEED, -MOTOR_REVERSE_SPEED
 
-    def _is_blocked(self, tof, us=None):
+    def _is_blocked(self, tof):
         """Use the cached forward ToF reading so panned servo readings don't
         cause false stops during cruise scan."""
         return 0.01 < self._tof_forward < TOF_STOP_DISTANCE
 
-    def _front_clearance(self, tof, us=None):
+    def _front_clearance(self, tof):
         """Clearance in the servo's CURRENT pan direction (for sweep scoring)."""
         return tof if tof > 0.01 else 99.0
 
@@ -289,7 +288,7 @@ class Navigator:
 
     # ── APPROACH ─────────────────────────────────────────────────────────────
 
-    def _approach_drive(self, tof, us, detections, rx, ry, rtheta):
+    def _approach_drive(self, tof, detections, rx, ry, rtheta):
         tof_close  = (0.01 < tof < PERSON_APPROACH_DIST)
         bbox_close = any((d.bbox[3]-d.bbox[1]) >= PERSON_BBOX_CLOSE_PX for d in detections)
 
@@ -300,7 +299,7 @@ class Navigator:
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        if self._is_blocked(tof, us):
+        if self._is_blocked(tof):
             self.state = NavState.EXPLORE
             self._start_sweep(rtheta, rx, ry)
             return MOTOR_STOP, MOTOR_STOP
@@ -316,7 +315,7 @@ class Navigator:
 
     # ── EXPLORE ───────────────────────────────────────────────────────────────
 
-    def _explore_drive(self, tof, us, rx, ry, rtheta, detections, cam_blocked=False):
+    def _explore_drive(self, tof, rx, ry, rtheta, detections, cam_blocked=False):
         now = time.time()
 
         # ── CRUISE ──────────────────────────────────────────────────────────
@@ -331,7 +330,7 @@ class Navigator:
                 return MOTOR_STOP, MOTOR_STOP
 
             # Hard stop: ToF within stop threshold (also guards with US when servo panned)
-            if self._is_blocked(tof, us):
+            if self._is_blocked(tof):
                 self._start_sweep(rtheta, rx, ry)
                 return MOTOR_STOP, MOTOR_STOP
 
@@ -357,7 +356,7 @@ class Navigator:
                 self._set_servo(int(new_angle))
 
                 # Record best clear direction seen during cruise scan
-                scan_score = self._front_clearance(tof, us)
+                scan_score = self._front_clearance(tof)
                 if scan_score > self._cruise_best_score:
                     offset_rad = math.radians((self.servo_angle - SERVO_CENTER) * SERVO_BEARING_SIGN)
                     self._cruise_best_h     = _wrap(rtheta + offset_rad)
@@ -372,7 +371,7 @@ class Navigator:
         #                turn to (start+0),     settle+read,
         #                turn to (start+RIGHT90), settle+read  → pick best.
         if self._phase == "sweep":
-            return self._sweep_step_exec(tof, us, rtheta, now, rx, ry)
+            return self._sweep_step_exec(tof, rtheta, now, rx, ry)
 
         # ── COMMIT (turn car to chosen heading) ───────────────────────────────
         if self._phase == "commit":
@@ -381,7 +380,7 @@ class Navigator:
             if abs(err) > HEADING_TOLERANCE and not timed_out:
                 return self._pivot(+1 if err > 0 else -1)
             # verify we can actually go forward from here
-            if self._is_blocked(tof, us):
+            if self._is_blocked(tof):
                 # heading is still blocked — sweep again
                 self._start_sweep(rtheta, rx, ry)
                 return MOTOR_STOP, MOTOR_STOP
@@ -397,7 +396,7 @@ class Navigator:
                 self._set_servo(SERVO_CENTER)
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
-            if self._is_blocked(tof, us):
+            if self._is_blocked(tof):
                 self._phase = "cruise"
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
@@ -475,7 +474,7 @@ class Navigator:
         self._sweep_target_h = _wrap(rtheta + math.radians(offsets[0]))
         self.motion = "stop"
 
-    def _sweep_step_exec(self, tof, us, rtheta, now, rx, ry):
+    def _sweep_step_exec(self, tof, rtheta, now, rx, ry):
         """N car rotations × 3 servo positions = 3N samples.
         Normal sweep: LEFT-90 / CENTER / RIGHT-90 (9 samples).
         Full survey:  0 / +90 / +180 / -90 (12 samples, covers full 360°).
@@ -544,7 +543,7 @@ class Navigator:
         # A direction is clear if EITHER:
         #   - ToF reads far / OOR (no obstacle detected by laser), OR
         #   - Camera sees open space (low variance in centre = no wall/object in shot)
-        tof_score = self._front_clearance(tof, us)   # 0.01–2 m or 99 if OOR
+        tof_score = self._front_clearance(tof)   # 0.01–2 m or 99 if OOR
         cam_clear = self._cam_center_score >= CAMERA_CLEAR_THRESHOLD
 
         if tof_score >= GREEDY_COMMIT_SCORE:
@@ -636,7 +635,7 @@ class Navigator:
 
     # ── RETURN ────────────────────────────────────────────────────────────────
 
-    def _return_drive(self, tof, us, rx, ry, rtheta):
+    def _return_drive(self, tof, rx, ry, rtheta):
         """Replay breadcrumbs in reverse toward (0,0).
 
         For each waypoint: face it first (gyro-closed-loop), then drive.
@@ -648,7 +647,7 @@ class Navigator:
 
         # ── obstacle avoidance during return ──
         if self._phase in ("sweep", "commit", "backup"):
-            cmd = self._explore_drive(tof, us, rx, ry, rtheta, [])
+            cmd = self._explore_drive(tof, rx, ry, rtheta, [])
             if self._phase == "cruise":
                 self._phase = "return_drive"
             return cmd
@@ -661,7 +660,7 @@ class Navigator:
             if self._return_advance_until == 0.0:
                 self._return_advance_until = now + BACKUP_TIME
             if now < self._return_advance_until:
-                if self._is_blocked(tof, us):
+                if self._is_blocked(tof):
                     # Hit something new mid-advance — sweep again from here
                     self._return_advance_until = 0.0
                     self._start_sweep(rtheta, rx, ry)
