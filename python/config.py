@@ -105,6 +105,10 @@ THREAT_DEDUP_DISTANCE = 10
 # Require a person to be seen this many consecutive detector frames before it
 # is logged as a confirmed threat (kills single-frame false positives).
 DETECTION_CONFIRM_FRAMES = 3
+# Minimum MobileNet-SSD confidence to accept a person detection. Raised from
+# 0.45 to 0.60 to suppress object false positives (cans/chairs read as "person"
+# in the 0.45–0.60 band); a real, clearly-visible person still clears this.
+DETECTION_CONFIDENCE = 0.60
 
 # Web
 FLASK_HOST = "0.0.0.0"

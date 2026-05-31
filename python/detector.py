@@ -4,7 +4,8 @@ import threading, time, math, os, subprocess
 from dataclasses import dataclass
 from typing import List
 from config import (CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FOCAL_LENGTH,
-                    PERSON_HEIGHT_METERS, DETECTION_CONFIRM_FRAMES)
+                    PERSON_HEIGHT_METERS, DETECTION_CONFIRM_FRAMES,
+                    DETECTION_CONFIDENCE)
 
 CLASSES = ["background","aeroplane","bicycle","bird","boat","bottle","bus","car",
            "cat","chair","cow","diningtable","dog","horse","motorbike","person",
@@ -78,7 +79,7 @@ class Detector:
                 results = []
                 for i in range(raw.shape[2]):
                     conf = float(raw[0,0,i,2]); cls = int(raw[0,0,i,1])
-                    if conf < 0.45 or cls not in DETECT_CLASSES: continue
+                    if conf < DETECTION_CONFIDENCE or cls not in DETECT_CLASSES: continue
                     x1,y1 = int(raw[0,0,i,3]*w), int(raw[0,0,i,4]*h)
                     x2,y2 = int(raw[0,0,i,5]*w), int(raw[0,0,i,6]*h)
                     bh = y2 - y1
