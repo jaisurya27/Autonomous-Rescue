@@ -39,6 +39,11 @@ status = {"state":"idle","speed":0,"heading":0,"distance_traveled":0,
           "distance_to_start":0,"detections":0,"fps":0,
           "vo_matches":0,"vo_inliers":0}
 
+# Manual override — when True the control loop sends these motor values instead
+manual_mode   = False
+_manual_left  = 0
+_manual_right = 0
+
 def _emergency_stop():
     """Called on app stop / SIGTERM — kills motors, plays fade-out, LEDs off."""
     try:
@@ -146,7 +151,10 @@ def control_loop():
                 cam_left_score   = path_vision.left_score,
                 cam_right_score  = path_vision.right_score,
                 cam_center_score = path_vision.center_score)
-        sensor_reader.send_command(left, right)
+        if manual_mode:
+            sensor_reader.send_command(_manual_left, _manual_right)
+        else:
+            sensor_reader.send_command(left, right)
 
         # ── indicator LED / buzzer ──
         _update_indicator(nav.state_name, nav._phase, confirmed)
@@ -185,7 +193,8 @@ def control_loop():
             "head_angle":nav.servo_angle,
             "persons_confirmed":len(detector.get_confirmed()),
             "vo_matches":vo.matches_count, "vo_inliers":vo.inliers_count,
-            "physically_moving": dead_reck.physically_moving})
+            "physically_moving": dead_reck.physically_moving,
+            "manual": manual_mode})
         time.sleep(max(0, 0.033-(time.time()-t0)))
 
 @app.route("/")
@@ -224,6 +233,40 @@ def camera_frame():
         _, buf = cv2.imencode('.jpg', d, [cv2.IMWRITE_JPEG_QUALITY, 65])
         return Response(buf.tobytes(), mimetype="image/jpeg")
     return Response(b'', mimetype="image/png")
+
+@app.route("/api/manual", methods=["POST"])
+def manual_control():
+    global manual_mode, _manual_left, _manual_right
+    cmd = request.get_json().get("cmd", "")
+    STEP = 20   # servo degrees per camera pan press
+
+    if cmd == "on":
+        manual_mode = True
+        with nav_lock: nav.stop()
+        sensor_reader.send_command(0, 0)
+        sensor_reader.set_indicator(0)
+
+    elif cmd == "off":
+        manual_mode = False
+        _manual_left = _manual_right = 0
+        sensor_reader.send_command(0, 0)
+
+    elif manual_mode:
+        if   cmd == "forward": _manual_left, _manual_right =  MOTOR_BASE_SPEED,  MOTOR_BASE_SPEED
+        elif cmd == "back":    _manual_left, _manual_right = -MOTOR_REVERSE_SPEED, -MOTOR_REVERSE_SPEED
+        elif cmd == "left":    _manual_left, _manual_right = -MOTOR_TURN_SPEED,  MOTOR_TURN_SPEED
+        elif cmd == "right":   _manual_left, _manual_right =  MOTOR_TURN_SPEED, -MOTOR_TURN_SPEED
+        elif cmd == "stop":    _manual_left = _manual_right = 0
+        elif cmd == "cam_left":
+            angle = max(SERVO_RIGHT, nav.servo_angle - STEP)
+            sensor_reader.set_servo(angle); nav.servo_angle = angle
+        elif cmd == "cam_right":
+            angle = min(SERVO_LEFT, nav.servo_angle + STEP)
+            sensor_reader.set_servo(angle); nav.servo_angle = angle
+        elif cmd == "cam_center":
+            sensor_reader.set_servo(SERVO_CENTER); nav.servo_angle = SERVO_CENTER
+
+    return jsonify({"ok": True, "manual": manual_mode})
 
 @app.route("/api/action", methods=["POST"])
 def action():

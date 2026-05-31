@@ -16,6 +16,7 @@ body{font-family:'SF Mono','Fira Code',monospace;background:var(--bg);color:var(
 .state.approach{border-color:var(--rd);color:var(--rd)}
 .state.return{border-color:var(--am);color:var(--am)}
 .state.idle{color:var(--tx2)}
+.state.manual{border-color:var(--pu);color:var(--pu)}
 .layout{display:grid;grid-template-columns:1fr 280px;height:calc(100vh - 42px)}
 .main-area{display:flex;flex-direction:column;overflow:hidden}
 .view-tabs{display:flex;gap:0;border-bottom:1px solid var(--bd);flex-shrink:0}
@@ -37,6 +38,19 @@ background:rgba(10,14,23,.85);padding:5px 8px;border-radius:6px}
 .btn{flex:1;padding:7px;border:1px solid var(--bd);border-radius:5px;background:var(--sf2);color:var(--tx);
 font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;letter-spacing:1px}
 .btn:hover{background:var(--bd)}
+.btn.active{background:var(--ac);color:#000;border-color:var(--ac)}
+/* Manual D-pad */
+.dpad-wrap{display:none;margin-top:6px}
+.dpad-wrap.visible{display:block}
+.dpad-hint{font-size:9px;color:var(--tx2);margin-bottom:6px;text-align:center;letter-spacing:1px}
+.dpad{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:6px}
+.dp{padding:10px 0;border:1px solid var(--bd);border-radius:5px;background:var(--sf2);
+color:var(--tx);font-family:inherit;font-size:16px;cursor:pointer;user-select:none;
+text-align:center;touch-action:none;transition:background .1s}
+.dp:active,.dp.held{background:var(--ac);color:#000}
+.dp.empty{visibility:hidden}
+.cam-row{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+.dp.cam{font-size:11px;letter-spacing:.5px}
 .mg{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .m{background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:8px}
 .ml{font-size:9px;color:var(--tx2);margin-bottom:2px}
@@ -82,9 +96,30 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
   <img class="cam" id="camFeed" src="/api/camera" alt="feed">
   <h2>Controls</h2>
   <div class="ctrls">
-    <button class="btn" onclick="doAction('explore')">Explore</button>
+    <button class="btn" id="btnExplore" onclick="doAction('explore')">Explore</button>
     <button class="btn" onclick="doAction('return')">Return</button>
     <button class="btn" onclick="doAction('stop')">Stop</button>
+    <button class="btn" id="btnManual" onclick="toggleManual()">Manual</button>
+  </div>
+  <!-- Manual D-pad (shown when manual mode is on) -->
+  <div class="dpad-wrap" id="dpadWrap">
+    <div class="dpad-hint">WASD · Q/E = cam · Space = stop</div>
+    <div class="dpad">
+      <button class="dp empty"></button>
+      <button class="dp" id="dpFwd"   data-cmd="forward">▲</button>
+      <button class="dp empty"></button>
+      <button class="dp" id="dpLeft"  data-cmd="left">◀</button>
+      <button class="dp" id="dpStop"  data-cmd="stop">■</button>
+      <button class="dp" id="dpRight" data-cmd="right">▶</button>
+      <button class="dp empty"></button>
+      <button class="dp" id="dpBack"  data-cmd="back">▼</button>
+      <button class="dp empty"></button>
+    </div>
+    <div class="cam-row">
+      <button class="dp cam" id="dpCamL"   data-cmd="cam_left">◀ CAM</button>
+      <button class="dp cam" id="dpCamC"   data-cmd="cam_center" onclick="">⊙ CTR</button>
+      <button class="dp cam" id="dpCamR"   data-cmd="cam_right">CAM ▶</button>
+    </div>
   </div>
   <h2>Decision</h2>
   <div class="decision-box">
@@ -98,7 +133,6 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
     <div class="m"><div class="ml">Speed</div><div class="mv" id="sS">0</div></div>
     <div class="m"><div class="ml">Traveled</div><div class="mv" id="sD">0m</div></div>
     <div class="m"><div class="ml">To start</div><div class="mv" id="sR">0m</div></div>
-    <div class="m"><div class="ml">US</div><div class="mv" id="sU">—</div></div>
     <div class="m"><div class="ml">ToF</div><div class="mv" id="sTof">—</div></div>
     <div class="m"><div class="ml">Threats</div><div class="mv" id="sT">0</div></div>
     <div class="m"><div class="ml">FPS</div><div class="mv" id="sF">0</div></div>
@@ -336,12 +370,14 @@ async function pollStatus() {
     document.getElementById('sS').textContent = s.speed;
     document.getElementById('sD').textContent = s.distance_traveled + 'm';
     document.getElementById('sR').textContent = s.distance_to_start + 'm';
-    document.getElementById('sU').textContent = s.us != null ? s.us + 'cm' : '—';
     document.getElementById('sTof').textContent = s.tof != null ? s.tof + 'cm' : '—';
     document.getElementById('sT').textContent = s.detections;
     document.getElementById('sF').textContent = Math.round(s.fps);
     const sl = document.getElementById('stL');
-    sl.textContent = s.state; sl.className = 'state ' + s.state;
+    sl.textContent = s.manual ? 'manual' : s.state;
+    sl.className = 'state ' + (s.manual ? 'manual' : s.state);
+    // Keep manual button highlighted while mode is on
+    document.getElementById('btnManual').classList.toggle('active', !!s.manual);
   } catch(e) {}
 }
 let lastPersonCount = 0;
@@ -376,6 +412,93 @@ async function doAction(a) {
   await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})});
   addLog('Action: '+a, 'nav');
 }
+
+// ══════════════════════════════════════════
+// MANUAL CONTROL
+// ══════════════════════════════════════════
+let isManual = false;
+let holdInterval = null;
+let heldKeys = {};
+
+async function sendManual(cmd) {
+  try {
+    await fetch('/api/manual', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cmd})});
+  } catch(e) {}
+}
+
+async function toggleManual() {
+  isManual = !isManual;
+  await sendManual(isManual ? 'on' : 'off');
+  document.getElementById('dpadWrap').classList.toggle('visible', isManual);
+  document.getElementById('btnManual').classList.toggle('active', isManual);
+  if (isManual) addLog('Manual mode ON — WASD to drive, Q/E for camera', 'nav');
+  else          addLog('Manual mode OFF', 'nav');
+}
+
+// Hold-to-move: send command immediately, then repeat every 80ms while held
+function dpStart(cmd) {
+  if (!isManual) return;
+  sendManual(cmd);
+  clearInterval(holdInterval);
+  holdInterval = setInterval(() => sendManual(cmd), 80);
+  // Visual feedback
+  const el = document.querySelector(`[data-cmd="${cmd}"]`);
+  if (el) el.classList.add('held');
+}
+function dpEnd() {
+  if (!isManual) return;
+  clearInterval(holdInterval); holdInterval = null;
+  sendManual('stop');
+  document.querySelectorAll('.dp.held').forEach(e => e.classList.remove('held'));
+}
+
+// Wire up all dpad buttons
+document.querySelectorAll('.dp[data-cmd]').forEach(btn => {
+  const cmd = btn.dataset.cmd;
+  const isMove = ['forward','back','left','right'].includes(cmd);
+  if (isMove) {
+    btn.addEventListener('mousedown',  e => { e.preventDefault(); dpStart(cmd); });
+    btn.addEventListener('touchstart', e => { e.preventDefault(); dpStart(cmd); }, {passive:false});
+    btn.addEventListener('mouseup',    dpEnd);
+    btn.addEventListener('mouseleave', dpEnd);
+    btn.addEventListener('touchend',   dpEnd);
+  } else {
+    // Camera buttons: single tap action + hold repeat
+    btn.addEventListener('mousedown',  e => { e.preventDefault(); dpStart(cmd); });
+    btn.addEventListener('touchstart', e => { e.preventDefault(); dpStart(cmd); }, {passive:false});
+    btn.addEventListener('mouseup',    dpEnd);
+    btn.addEventListener('mouseleave', dpEnd);
+    btn.addEventListener('touchend',   dpEnd);
+  }
+});
+
+// Keyboard: WASD drive · Q/E camera · Space stop
+const KEY_MAP = {
+  'KeyW':'forward','KeyS':'back','KeyA':'left','KeyD':'right',
+  'ArrowUp':'forward','ArrowDown':'back','ArrowLeft':'left','ArrowRight':'right',
+  'KeyQ':'cam_left','KeyE':'cam_right','KeyC':'cam_center','Space':'stop'
+};
+document.addEventListener('keydown', e => {
+  if (!isManual) return;
+  if (e.target.tagName === 'INPUT') return;
+  const cmd = KEY_MAP[e.code];
+  if (!cmd || heldKeys[e.code]) return;
+  heldKeys[e.code] = true;
+  e.preventDefault();
+  dpStart(cmd);
+});
+document.addEventListener('keyup', e => {
+  if (!isManual) return;
+  const cmd = KEY_MAP[e.code];
+  if (!cmd) return;
+  delete heldKeys[e.code];
+  // Only stop motors if no other move key is still held
+  const anyMove = ['KeyW','KeyS','KeyA','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']
+    .some(k => heldKeys[k]);
+  if (!anyMove) dpEnd();
+});
 function addLog(msg, type) {
   const log = document.getElementById('log');
   const t = new Date().toLocaleTimeString();
