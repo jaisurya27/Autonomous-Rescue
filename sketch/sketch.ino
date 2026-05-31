@@ -36,8 +36,9 @@ float g_tof_mm=0, g_temp_c=0, g_us_cm=0;
 
 int servoAngle = 90;
 volatile int servoPulseUs = 1500;
-unsigned long lastRefresh = 0, lastServo = 0;
+unsigned long lastRefresh = 0, lastServo = 0, lastUS = 0;
 const unsigned long REFRESH_MS = 50;
+const unsigned long US_INTERVAL_MS = 100;  // read US no faster than 10 Hz
 
 // ---- motors (your TB6612: one dir pin per side) ----
 void driveOne(int pwmPin, int dirPin, int fwd, int speed) {
@@ -94,7 +95,8 @@ void refreshSensors() {
     }
     if (has_tof && tof.available()) g_tof_mm = tof.get();
     if (has_thermo) g_temp_c = thermo.getTemperature();
-    g_us_cm = readUltrasonicCm();
+    // US is read separately in loop() on its own timer to avoid
+    // pulseIn blocking during a Bridge call (causes heap corruption).
 }
 
 void setup() {
@@ -120,8 +122,10 @@ void setup() {
 }
 
 void loop() {
-    Bridge.update();
     unsigned long now = millis();
     if (now - lastServo >= 20) { lastServo = now; servoPulse(); }
     if (now - lastRefresh >= REFRESH_MS) { lastRefresh = now; refreshSensors(); }
+    // Read ultrasonic BEFORE Bridge.update() so pulseIn never blocks mid-call.
+    if (now - lastUS >= US_INTERVAL_MS) { lastUS = now; g_us_cm = readUltrasonicCm(); }
+    Bridge.update();
 }
