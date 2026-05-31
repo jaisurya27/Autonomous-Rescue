@@ -114,7 +114,8 @@ class Navigator:
         self._reset()
         self.state = NavState.EXPLORE
         self._explore_start = time.time()
-        self._pending_survey = True   # do a full 360° survey before the first move
+        # No initial survey: car starts moving immediately.
+        # Full 360° surveys happen after backup or stuck-reversal (see _start_sweep full=True).
 
     def start_return(self, breadcrumbs=None):
         self._reset()
@@ -495,7 +496,9 @@ class Navigator:
             self._sweep_target_h = _wrap(
                 self._sweep_start_h + math.radians(self._active_sweep_offsets[self._sweep_step])
             )
-            self._settle_t = now   # brief settle before next car rotation
+        # Do NOT set _settle_t here. Section A requires _settle_t is None to trigger
+        # the car rotation. The servo recenter is fast and will finish during rotation.
+        # (The old _settle_t=now here was causing section A to be permanently skipped.)
 
         self.motion = "stop"
         return MOTOR_STOP, MOTOR_STOP
