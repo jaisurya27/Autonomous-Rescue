@@ -396,26 +396,14 @@ class Navigator:
             else:
                 speed = MOTOR_BASE_SPEED
 
-            # Servo scans L→C→R while moving — builds occupancy grid and
-            # records the best clear direction seen, which the next sweep can
-            # use immediately instead of scanning from scratch.
-            if now - self._servo_scan_t >= SERVO_SCAN_INTERVAL:
-                self._servo_scan_t = now
-                new_angle = self.servo_angle + self._cruise_servo_dir * SERVO_SCAN_STEP_DEG
-                if new_angle >= SERVO_LEFT:
-                    new_angle = SERVO_LEFT
-                    self._cruise_servo_dir = -1
-                elif new_angle <= SERVO_RIGHT:
-                    new_angle = SERVO_RIGHT
-                    self._cruise_servo_dir = 1
-                self._set_servo(int(new_angle))
-
-                # Record best clear direction seen during cruise scan
-                scan_score = self._front_clearance(tof)
-                if scan_score > self._cruise_best_score:
-                    offset_rad = math.radians((self.servo_angle - SERVO_CENTER) * SERVO_BEARING_SIGN)
-                    self._cruise_best_h     = _wrap(rtheta + offset_rad)
-                    self._cruise_best_score = scan_score
+            # Keep the head locked FORWARD while cruising. The ToF rides on the
+            # servo, so a centred head means _tof_forward is always a live
+            # straight-ahead reading — the car reacts instantly to an obstacle
+            # dead ahead instead of waiting for the head to swing back to centre.
+            # The servo is only used to look around AFTER an obstacle stops us
+            # (the sweep phase pans L/C/R to choose a turn).
+            if self.servo_angle != SERVO_CENTER:
+                self._set_servo(SERVO_CENTER)
 
             self._sweep_attempts = 0
             self.motion = "forward"
