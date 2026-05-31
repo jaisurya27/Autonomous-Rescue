@@ -3,7 +3,8 @@
 import threading, time, math, os, subprocess
 from dataclasses import dataclass
 from typing import List
-from config import CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FOCAL_LENGTH, PERSON_HEIGHT_METERS
+from config import (CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FOCAL_LENGTH,
+                    PERSON_HEIGHT_METERS, DETECTION_CONFIRM_FRAMES)
 
 CLASSES = ["background","aeroplane","bicycle","bird","boat","bottle","bus","car",
            "cat","chair","cow","diningtable","dog","horse","motorbike","person",
@@ -18,6 +19,7 @@ class Detection:
     label: str; confidence: float; bbox: tuple
     distance: float; bearing: float
     world_x: float = 0.0; world_y: float = 0.0
+    confirmed: bool = False     # True once seen DETECTION_CONFIRM_FRAMES in a row
 
 class Detector:
     def __init__(self):
@@ -29,6 +31,8 @@ class Detector:
         self._running = False
         self.fx = CAMERA_FOCAL_LENGTH
         self.cx = CAMERA_WIDTH / 2.0
+        # tracks: list of [cx, cy, hits, missed] for temporal confirmation
+        self._tracks = []
 
     def start(self):
         self._ensure_model()
@@ -54,6 +58,11 @@ class Detector:
     def get_detections(self):
         with self._lock: return list(self._detections)
 
+    def get_confirmed(self):
+        """Only detections that have persisted long enough to be trusted."""
+        with self._lock:
+            return [d for d in self._detections if d.confirmed]
+
     def _loop(self):
         import cv2
         while self._running:
@@ -76,13 +85,39 @@ class Detector:
                     dist = (self.fx*PERSON_HEIGHT_METERS)/bh if bh > 10 else 5.0
                     bearing = math.atan2((x1+x2)/2.0 - self.cx, self.fx)
                     results.append(Detection(CLASSES[cls],conf,(x1,y1,x2,y2),dist,bearing))
+                self._confirm(results, w)
                 with self._lock: self._detections = results
             except Exception as e:
                 print(f"[detector] Error: {e}")
             time.sleep(0.05)
 
-    def project_to_world(self, det, rx, ry, rtheta):
-        a = rtheta + det.bearing
+    def _confirm(self, results, frame_w):
+        """Match detections to short-lived tracks; flag a detection confirmed
+        once its track has been hit DETECTION_CONFIRM_FRAMES frames in a row.
+        Kills single-frame false positives before they reach the map."""
+        match_px = frame_w * 0.25          # how close a center must be to match
+        for t in self._tracks: t[3] += 1   # assume missed until matched
+        for det in results:
+            x1, y1, x2, y2 = det.bbox
+            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            best = None; best_d = match_px
+            for t in self._tracks:
+                d = math.hypot(cx - t[0], cy - t[1])
+                if d < best_d: best_d = d; best = t
+            if best is not None:
+                best[0], best[1] = cx, cy
+                best[2] += 1; best[3] = 0
+                det.confirmed = best[2] >= DETECTION_CONFIRM_FRAMES
+            else:
+                self._tracks.append([cx, cy, 1, 0])
+                det.confirmed = DETECTION_CONFIRM_FRAMES <= 1
+        # drop tracks that have gone missing for a few frames
+        self._tracks = [t for t in self._tracks if t[3] <= 5]
+
+    def project_to_world(self, det, rx, ry, rtheta, head_bearing=0.0):
+        # camera bearing is relative to the head; add the head's pan offset and
+        # the robot heading to get a world bearing.
+        a = rtheta + head_bearing + det.bearing
         det.world_x = rx + det.distance * math.cos(a)
         det.world_y = ry + det.distance * math.sin(a)
         return det

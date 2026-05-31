@@ -42,6 +42,12 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
 .mv{font-size:15px;font-weight:500}
 .log{background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px;font-size:9px;color:var(--tx2);max-height:150px;overflow-y:auto;line-height:1.6}
 .le.threat{color:var(--rd)}.le.nav{color:var(--gn)}
+.persons{display:flex;flex-direction:column;gap:5px}
+.person{background:var(--sf2);border:1px solid var(--bd);border-left:3px solid var(--rd);border-radius:5px;padding:7px 8px}
+.person .pt{font-size:11px;color:var(--rd);font-weight:500;display:flex;justify-content:space-between}
+.person .pc{font-size:10px;color:var(--tx);margin-top:3px;line-height:1.5}
+.person .pc span{color:var(--tx2)}
+.no-persons{font-size:10px;color:var(--tx2);font-style:italic}
 </style>
 </head>
 <body>
@@ -85,6 +91,8 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
     <div class="m"><div class="ml">VO matches</div><div class="mv" id="sM">0</div></div>
     <div class="m"><div class="ml">VO inliers</div><div class="mv" id="sI">0</div></div>
   </div>
+  <h2>Persons Found</h2>
+  <div class="persons" id="persons"><div class="no-persons">None yet — exploring…</div></div>
   <h2>Event log</h2>
   <div class="log" id="log"></div>
 </div>
@@ -107,7 +115,6 @@ function switchView(v) {
 const cv = document.getElementById('mapCanvas');
 const ctx = cv.getContext('2d');
 const CS = 4; // cell size in pixels
-let lastTC = 0;
 let latestMapData = null;
 
 function drawMap(d) {
@@ -314,7 +321,33 @@ async function pollStatus() {
     document.getElementById('sI').textContent = s.vo_inliers || 0;
     const sl = document.getElementById('stL');
     sl.textContent = s.state; sl.className = 'state ' + s.state;
-    if (s.detections > lastTC) { addLog('Threat detected! Total: '+s.detections,'threat'); lastTC = s.detections; }
+  } catch(e) {}
+}
+let lastPersonCount = 0;
+async function pollPersons() {
+  try {
+    const r = await fetch('/api/persons'); const d = await r.json();
+    const list = d.persons || [];
+    const el = document.getElementById('persons');
+    if (!list.length) {
+      el.innerHTML = '<div class="no-persons">None yet — exploring…</div>';
+    } else {
+      el.innerHTML = list.map((p, i) => `
+        <div class="person">
+          <div class="pt"><span>#${i+1} ${p.label}</span><span>${Math.round(p.confidence*100)}%</span></div>
+          <div class="pc">
+            <span>at</span> x=${p.x}m, y=${p.y}m<br>
+            <span>${p.dist_from_start}m from start</span>
+          </div>
+        </div>`).join('');
+    }
+    if (list.length > lastPersonCount) {
+      const p = list[list.length-1];
+      addLog(`PERSON found at (${p.x}, ${p.y})m — ${p.dist_from_start}m from start`, 'threat');
+      lastPersonCount = list.length;
+    } else if (list.length < lastPersonCount) {
+      lastPersonCount = list.length;
+    }
   } catch(e) {}
 }
 function pollCam() { document.getElementById('camFeed').src = '/api/camera?' + Date.now(); }
@@ -331,6 +364,7 @@ function addLog(msg, type) {
 
 setInterval(pollMap, 250);
 setInterval(pollStatus, 500);
+setInterval(pollPersons, 500);
 setInterval(pollCam, 1000);
 addLog('Dashboard connected', 'info');
 </script>

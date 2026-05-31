@@ -49,12 +49,32 @@ class OccupancyGrid:
         gy = int(START_Y + wy / GRID_RESOLUTION)
         if not (0 <= gx < GRID_WIDTH and 0 <= gy < GRID_HEIGHT):
             return
-        # Dedup: skip if a threat of same label already exists nearby
-        for tx, ty, tl, tc in self.threats:
+        # Dedup: if a threat of the same label already exists nearby, treat this
+        # as the same person. Keep the higher-confidence sighting (and its
+        # position) instead of dropping a permanent marker at the first noisy hit.
+        for i, (tx, ty, tl, tc) in enumerate(self.threats):
             if tl == label and abs(tx - gx) + abs(ty - gy) < THREAT_DEDUP_DISTANCE:
-                # Update confidence if higher
+                if confidence > tc:
+                    self.threats[i] = (gx, gy, label, confidence)
                 return
         self.threats.append((gx, gy, label, confidence))
+
+    def get_persons_world(self):
+        """Confirmed person markers in world metres (relative to start), with
+        distance from start and confidence — for the dashboard/API."""
+        out = []
+        for gx, gy, label, conf in self.threats:
+            if label != "person":
+                continue
+            wx = (gx - START_X) * GRID_RESOLUTION
+            wy = (gy - START_Y) * GRID_RESOLUTION
+            out.append({
+                "x": round(wx, 2), "y": round(wy, 2),
+                "dist_from_start": round(math.hypot(wx, wy), 2),
+                "confidence": round(float(conf), 2),
+                "label": label,
+            })
+        return out
 
     def get_map_data_for_web(self, robot_gx, robot_gy, robot_theta):
         visited_coords = np.argwhere(self.visited)

@@ -28,10 +28,16 @@ MOTOR_BASE_SPEED = 55     # your low-speed cruise (45 stalled; ~55 reliable)
 MOTOR_TURN_SPEED = 75
 MOTOR_STOP = 0
 
-# Servo scan (your pan head) — used for smart deflection
+# Servo scan (your pan head) — used for smart deflection.
+# Camera + ToF are both on this head, so panning aims both.
 SERVO_CENTER = 90
 SERVO_LEFT   = 150
 SERVO_RIGHT  = 30
+# Seconds to let the head physically swing before trusting the panned ToF read.
+SERVO_SETTLE_S = 0.45
+# Sign: looking LEFT (servo>90) should add a POSITIVE bearing (CCW). If your
+# head is geared so 150 actually points right, set this to -1.
+SERVO_BEARING_SIGN = 1.0
 
 # Heading source: your Movement gyro is on the PITCH axis (vertical mount)
 # gx=roll, gy=pitch, gz=yaw  -> we use gy as turn-rate.
@@ -44,8 +50,11 @@ CAMERA_HEIGHT = 240
 CAMERA_FOCAL_LENGTH = 300
 PERSON_HEIGHT_METERS = 1.7
 
-# Threat dedup
+# Threat dedup (cells, manhattan). 10 cells * 0.05 m = 0.5 m
 THREAT_DEDUP_DISTANCE = 10
+# Require a person to be seen this many consecutive detector frames before it
+# is logged as a confirmed threat (kills single-frame false positives).
+DETECTION_CONFIRM_FRAMES = 3
 
 # Web
 FLASK_HOST = "0.0.0.0"
