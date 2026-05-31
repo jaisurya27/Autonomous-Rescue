@@ -29,12 +29,12 @@ MOTOR_TURN_SPEED = 75
 MOTOR_STOP = 0
 
 # --- Recon / obstacle avoidance ---
-US_STOP_DISTANCE   = 0.15   # front ultrasonic hard stop (m) [10-15 cm]
+US_STOP_DISTANCE   = 0.05   # front ultrasonic hard stop (m) [5 cm]
 TOF_STOP_DISTANCE  = 0.25   # head ToF stop when centered (m)
 SWEEP_STEP_DEG     = 45     # car-rotation step for the 360 deg scan
 SWEEP_SETTLE_S     = 0.35   # wait after each pivot step before reading distance
-MIN_CLEARANCE      = 0.30   # if best clearance everywhere is below this -> dead end
-PIVOT_STEP_TIMEOUT = 1.4    # s, safety cap per pivot step (gyro may be flaky)
+MIN_CLEARANCE      = 0.10   # if best clearance everywhere below this -> dead end
+PIVOT_STEP_TIMEOUT = 1.4    # s, safety cap per pivot step
 BACKUP_TIME        = 0.6    # s reverse when in a dead end
 
 # --- Motion-model odometry (replaces drifting VO translation) ---

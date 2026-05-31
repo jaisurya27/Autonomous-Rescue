@@ -5,7 +5,7 @@ return-to-base + servo-scan obstacle deflection. Camera via OpenCV, served
 with the sensor/motor/servo Bridge to the MCU. All offline.
 """
 
-import time, json as _json, threading, math
+import time, json as _json, threading, math, signal, atexit
 import numpy as _np, cv2
 from flask import Flask, render_template, jsonify, Response, request
 from config import *
@@ -32,8 +32,23 @@ vo = VisualOdometry(CAMERA_FOCAL_LENGTH, CAMERA_WIDTH//2, CAMERA_HEIGHT//2)
 
 camera = None; camera_lock = threading.Lock()
 latest_frame = None; frame_lock = threading.Lock()
+nav_lock = threading.Lock()   # guards nav state changes between Flask + control loop
 status = {"state":"idle","speed":0,"heading":0,"distance_traveled":0,
-          "distance_to_start":0,"detections":0,"fps":0,"vo_matches":0,"vo_inliers":0}
+          "distance_to_start":0,"detections":0,"fps":0,"us":0,
+          "vo_matches":0,"vo_inliers":0}
+
+def _emergency_stop():
+    """Called on app stop / SIGTERM — kills motors immediately so the car
+    doesn't keep driving after the Python process exits."""
+    try:
+        sensor_reader.send_command(0, 0)
+        sensor_reader.send_command(0, 0)   # send twice in case first is dropped
+    except Exception:
+        pass
+
+atexit.register(_emergency_stop)
+signal.signal(signal.SIGTERM, lambda *_: (_emergency_stop(), exit(0)))
+signal.signal(signal.SIGINT,  lambda *_: (_emergency_stop(), exit(0)))
 
 app = Flask(__name__)
 
@@ -92,10 +107,11 @@ def control_loop():
         # Only react (pause to classify) to confirmed people, and only when the
         # head is centered so the bearing is meaningful.
         has_det = len(detector.get_confirmed()) > 0
-        left, right = nav.compute_command(
-            fs.tof_distance if fs.valid else 0.0,
-            fs.us_distance  if fs.valid else 0.0,
-            px, py, pth, has_det)
+        with nav_lock:
+            left, right = nav.compute_command(
+                fs.tof_distance if fs.valid else 0.0,
+                fs.us_distance  if fs.valid else 0.0,
+                px, py, pth, has_det)
         sensor_reader.send_command(left, right)
 
         lc += 1; now = time.time()
@@ -103,6 +119,7 @@ def control_loop():
             status["fps"] = round(lc/(now-ft),1); lc = 0; ft = now
         status.update({"state":nav.state_name, "speed":round(dead_reck.pose.speed,3),
             "heading":round(math.degrees(pth) % 360, 1),
+            "us":round(fs.us_distance * 100, 1) if fs.valid else 0,
             "distance_traveled":round(dead_reck.total_distance,2),
             "distance_to_start":round(dead_reck.distance_to_start(),2),
             "detections":len(occ_grid.threats),
@@ -154,13 +171,20 @@ def camera_frame():
 @app.route("/api/action", methods=["POST"])
 def action():
     act = request.get_json().get("action","")
-    if act == "explore":
-        dead_reck.reset()                 # zero pose + re-estimate gyro bias at rest
-        vo.x = vo.y = vo.theta = 0.0
-        nav.start_exploration()
-    elif act == "return": nav.start_return(dead_reck.breadcrumbs)
-    elif act == "stop":
-        nav.stop(); sensor_reader.send_command(0,0)
+    with nav_lock:
+        if act == "explore":
+            dead_reck.reset()
+            vo.x = vo.y = vo.theta = 0.0
+            nav.start_exploration()
+        elif act == "return":
+            if len(dead_reck.breadcrumbs) > 1:
+                nav.start_return(dead_reck.breadcrumbs)
+            else:
+                nav.stop()               # nowhere to return to — just stop
+        elif act == "stop":
+            nav.stop()
+    # always send a stop command immediately so MCU doesn't coast
+    sensor_reader.send_command(0, 0)
     return jsonify({"ok":True, "state":nav.state_name})
 
 # App Lab runs this module; start everything at import.

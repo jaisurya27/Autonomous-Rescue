@@ -86,6 +86,7 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
     <div class="m"><div class="ml">Speed</div><div class="mv" id="sS">0</div></div>
     <div class="m"><div class="ml">Traveled</div><div class="mv" id="sD">0m</div></div>
     <div class="m"><div class="ml">To start</div><div class="mv" id="sR">0m</div></div>
+    <div class="m"><div class="ml">Ultrasonic</div><div class="mv" id="sU">—</div></div>
     <div class="m"><div class="ml">Threats</div><div class="mv" id="sT">0</div></div>
     <div class="m"><div class="ml">FPS</div><div class="mv" id="sF">0</div></div>
     <div class="m"><div class="ml">VO matches</div><div class="mv" id="sM">0</div></div>
@@ -315,6 +316,7 @@ async function pollStatus() {
     document.getElementById('sS').textContent = s.speed;
     document.getElementById('sD').textContent = s.distance_traveled + 'm';
     document.getElementById('sR').textContent = s.distance_to_start + 'm';
+    document.getElementById('sU').textContent = s.us != null ? s.us + 'cm' : '—';
     document.getElementById('sT').textContent = s.detections;
     document.getElementById('sF').textContent = Math.round(s.fps);
     document.getElementById('sM').textContent = s.vo_matches || 0;
