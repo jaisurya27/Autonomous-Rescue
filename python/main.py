@@ -169,6 +169,7 @@ def control_loop():
             "phase": _phase,
             "decision": _decision,
             "sweep_attempts": nav._sweep_attempts,
+            "pose_x":round(px, 2), "pose_y":round(py, 2),
             "distance_traveled":round(dead_reck.total_distance,2),
             "distance_to_start":round(dead_reck.distance_to_start(),2),
             "detections":len(occ_grid.threats),
@@ -225,7 +226,7 @@ def action():
             vo.x = vo.y = vo.theta = 0.0
             nav.start_exploration()
         elif act == "return":
-            nav.start_return()    # heads toward (0,0) — no breadcrumbs needed
+            nav.start_return(dead_reck.breadcrumbs)
         elif act == "stop":
             nav.stop()
     # always send a stop command immediately so MCU doesn't coast

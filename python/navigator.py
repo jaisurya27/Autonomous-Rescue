@@ -83,7 +83,9 @@ class Navigator:
         self._rtheta           = 0.0
 
         # return
-        self._return_turn_start = None
+        self._return_path        = []
+        self._return_idx         = 0
+        self._return_turn_start  = None
         self._return_dodge_until = 0.0
         self._return_dodge_dir   = 1
 
@@ -94,9 +96,16 @@ class Navigator:
         self.state = NavState.EXPLORE
         self._explore_start = time.time()
 
-    def start_return(self, _breadcrumbs=None):
+    def start_return(self, breadcrumbs=None):
         self._reset()
         self.state = NavState.RETURN
+        # Replay breadcrumbs in reverse. Each crumb is (x, y, theta).
+        # If no breadcrumbs given, we'll aim straight at (0,0) as fallback.
+        if breadcrumbs and len(breadcrumbs) > 1:
+            self._return_path = list(reversed(breadcrumbs))
+        else:
+            self._return_path = []
+        self._return_idx = 0
 
     def stop(self):
         self._reset()
@@ -426,40 +435,71 @@ class Navigator:
     # ── RETURN ────────────────────────────────────────────────────────────────
 
     def _return_drive(self, tof, us, rx, ry, rtheta):
-        """Head toward (0,0). If blocked, dodge 90° then re-aim. Simple, reliable."""
+        """Replay breadcrumbs in reverse toward (0,0).
+
+        For each waypoint: face it first (gyro-closed-loop), then drive.
+        If an obstacle blocks the path, stop and sweep for a clear heading
+        (same as explore), then continue toward the next waypoint.
+        Falls back to aiming straight at (0,0) if breadcrumbs run out.
+        """
         now = time.time()
 
-        # if dodging (temporary 90° turn to avoid obstacle)
-        if now < self._return_dodge_until:
-            return self._pivot(self._return_dodge_dir)
+        # ── obstacle during return — use the same sweep logic as explore ──
+        if self._phase in ("sweep", "commit", "backup"):
+            cmd = self._explore_drive(tof, us, rx, ry, rtheta, [])
+            # Once the sweep resolves and we've advanced a bit, resume return
+            if self._phase == "cruise":
+                self._phase = "return_drive"
+            return cmd
 
+        self._phase = "return_drive"
+
+        # ── arrived? ──
         dist_home = math.hypot(rx, ry)
-        if dist_home < 0.20:
+        if dist_home < 0.25:
             self.state = NavState.ARRIVED
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        # obstacle check during return
+        # ── obstacle check — trigger sweep ──
         if 0.01 < us < RETURN_US_STOP:
-            # dodge 90° away from the obstacle, brief
-            self._return_dodge_dir   = 1   # always left — simple
-            self._return_dodge_until = now + 0.8
-            self._return_turn_start  = None
-            return self._pivot(self._return_dodge_dir)
+            self._start_sweep(rtheta, rx, ry)
+            self.motion = "stop"
+            return MOTOR_STOP, MOTOR_STOP
 
-        # aim toward home (0,0)
-        target_th = math.atan2(-ry, -rx)
-        err = _ang_diff(target_th, rtheta)
-
-        if abs(err) > 0.30:
-            if self._return_turn_start is None:
-                self._return_turn_start = now
-            elif (now - self._return_turn_start) > RETURN_TURN_TIMEOUT:
-                # turn is taking too long — just drive forward and correct later
+        # ── choose target waypoint ──
+        # Skip breadcrumbs that are already behind us (already passed them).
+        while self._return_idx < len(self._return_path):
+            tx, ty, _ = self._return_path[self._return_idx]
+            if math.hypot(tx - rx, ty - ry) < 0.15:
+                self._return_idx += 1
                 self._return_turn_start = None
             else:
-                return self._pivot(+1 if err > 0 else -1)
+                break
 
+        if self._return_idx < len(self._return_path):
+            tx, ty, _ = self._return_path[self._return_idx]
+        else:
+            # breadcrumbs exhausted — aim straight at origin
+            tx, ty = 0.0, 0.0
+
+        # ── face the target ──
+        target_th = math.atan2(ty - ry, tx - rx)
+        err = _ang_diff(target_th, rtheta)
+
+        if abs(err) > math.radians(20):
+            # start/continue turning
+            if self._return_turn_start is None:
+                self._return_turn_start = now
+            if (now - self._return_turn_start) < RETURN_TURN_TIMEOUT:
+                return self._pivot(+1 if err > 0 else -1)
+            # turn timed out — skip this crumb and try next
+            self._return_idx += 1
+            self._return_turn_start = None
+            self.motion = "stop"
+            return MOTOR_STOP, MOTOR_STOP
+
+        # ── facing it — drive ──
         self._return_turn_start = None
         self.motion = "forward"
         return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED

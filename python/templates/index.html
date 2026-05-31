@@ -325,10 +325,11 @@ async function pollStatus() {
     const r = await fetch('/api/status'); const s = await r.json();
     // decision feed
     document.getElementById('dDecision').textContent = s.decision || '—';
-    const camTxt = s.cam_blocked ? 'Camera: BLOCKED' : 'Camera: clear';
-    const usTxt  = 'US: ' + (s.us ?? '—') + 'cm  ToF: ' + (s.tof ?? '—') + 'cm';
-    const swTxt  = s.sweep_attempts > 0 ? '  Sweeps: ' + s.sweep_attempts : '';
-    document.getElementById('dSub').textContent = camTxt + '  |  ' + usTxt + swTxt;
+    const camTxt  = s.cam_blocked ? 'Camera: BLOCKED' : 'Camera: clear';
+    const usTxt   = 'US: ' + (s.us ?? '—') + 'cm  ToF: ' + (s.tof ?? '—') + 'cm';
+    const swTxt   = s.sweep_attempts > 0 ? '  Sweeps: ' + s.sweep_attempts : '';
+    const poseTxt = '  pos:(' + (s.pose_x ?? '?') + ',' + (s.pose_y ?? '?') + ')m  dist:' + (s.distance_to_start ?? '?') + 'm';
+    document.getElementById('dSub').textContent = camTxt + '  |  ' + usTxt + swTxt + poseTxt;
     document.getElementById('dSub').className = s.cam_blocked ? 'decision-sub cam-blocked' : 'decision-sub cam-clear';
     // telemetry
     document.getElementById('sH').textContent = s.heading + '°';
