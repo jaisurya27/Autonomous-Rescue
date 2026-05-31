@@ -19,13 +19,13 @@ Camera signal: NOT used for obstacle stopping. Only US + ToF stop the car.
 
 import math, time
 from enum import Enum
-from config import (MOTOR_BASE_SPEED, MOTOR_TURN_SPEED, MOTOR_REVERSE_SPEED, MOTOR_STOP,
-                    TOF_STOP_DISTANCE, RETURN_TOF_STOP,
+from config import (MOTOR_BASE_SPEED, MOTOR_SLOW_SPEED, MOTOR_TURN_SPEED, MOTOR_REVERSE_SPEED, MOTOR_STOP,
+                    TOF_STOP_DISTANCE, TOF_WARN_DISTANCE, RETURN_TOF_STOP,
                     SWEEP_SETTLE_S, MIN_CLEARANCE, PIVOT_STEP_TIMEOUT,
                     BACKUP_TIME, EXPLORATION_TIMEOUT,
                     STUCK_TIMEOUT, STUCK_MOVE_THRESHOLD, STUCK_REVERSE_TIME,
                     MAX_SWEEP_ATTEMPTS, RETURN_TURN_TIMEOUT,
-                    SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT,
+                    SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT, SERVO_BEARING_SIGN,
                     PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
 
 HEADING_TOLERANCE    = math.radians(15)
@@ -89,11 +89,12 @@ class Navigator:
         self._cam_right_score  = 0.5
 
         # return
-        self._return_path        = []
-        self._return_idx         = 0
-        self._return_turn_start  = None
-        self._return_dodge_until = 0.0
-        self._return_dodge_dir   = 1
+        self._return_path          = []
+        self._return_idx           = 0
+        self._return_turn_start    = None
+        self._return_dodge_until   = 0.0
+        self._return_dodge_dir     = 1
+        self._return_advance_until = 0.0
 
     # ── public transitions ───────────────────────────────────────────────────
 
@@ -133,10 +134,11 @@ class Navigator:
         self._stuck_ref_t      = time.time()
         self._stuck_rev_until  = 0.0
         self._stuck_reversing  = False
-        self._approach_logged  = False
-        self._return_turn_start = None
-        self._return_dodge_until = 0.0
-        self.motion            = "stop"
+        self._approach_logged      = False
+        self._return_turn_start    = None
+        self._return_dodge_until   = 0.0
+        self._return_advance_until = 0.0
+        self.motion                = "stop"
         self._set_servo(SERVO_CENTER)
 
     # ── properties ───────────────────────────────────────────────────────────
@@ -281,19 +283,22 @@ class Navigator:
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
 
-            # Hard stop: US or ToF within threshold
+            # Hard stop: ToF within stop threshold
             if self._is_blocked(tof, us):
                 self._start_sweep(rtheta, rx, ry)
                 return MOTOR_STOP, MOTOR_STOP
 
-            # Pre-emptive: camera sees obstacle while still far enough to act
-            if cam_blocked:
-                self._start_sweep(rtheta, rx, ry)
-                return MOTOR_STOP, MOTOR_STOP
+            # Graduated slow-down: scale speed between warn and stop distances.
+            # Camera signal is soft-only and does NOT trigger a sweep.
+            if 0.01 < tof < TOF_WARN_DISTANCE:
+                factor = (tof - TOF_STOP_DISTANCE) / (TOF_WARN_DISTANCE - TOF_STOP_DISTANCE)
+                speed = max(MOTOR_SLOW_SPEED, int(MOTOR_BASE_SPEED * max(0.0, min(1.0, factor))))
+            else:
+                speed = MOTOR_BASE_SPEED
 
             self._sweep_attempts = 0
             self.motion = "forward"
-            return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED
+            return speed, speed
 
         # ── SWEEP ────────────────────────────────────────────────────────────
         # Step sequence: turn car to (start+LEFT90), settle+read,
@@ -355,7 +360,7 @@ class Navigator:
 
         if self._sweep_attempts == 1:
             self._sweep_ref_pos = (rx, ry)
-        elif self._sweep_attempts > MAX_SWEEP_ATTEMPTS and moved < 0.08:
+        elif self._sweep_attempts >= MAX_SWEEP_ATTEMPTS and moved < 0.08:
             print(f"[nav] {self._sweep_attempts} sweeps no progress — backing up")
             self._sweep_attempts = 0
             self._sweep_ref_pos  = (rx, ry)
@@ -407,16 +412,12 @@ class Navigator:
 
         # ── C: record sample at current car+servo position ──
         servo_pos = SERVO_SWEEP_POS[self._servo_step]
-        servo_offset_rad = math.radians(servo_pos - SERVO_CENTER)
+        # Apply SERVO_BEARING_SIGN so heading sign matches actual head orientation.
+        servo_offset_rad = math.radians((servo_pos - SERVO_CENTER) * SERVO_BEARING_SIGN)
         world_h = _wrap(rtheta + servo_offset_rad)
-
-        if servo_pos == SERVO_CENTER:
-            score = self._front_clearance(tof, us)
-        elif servo_pos == SERVO_LEFT:
-            score = self._cam_left_score * 3.0    # scale ~0-3 m equivalent
-        else:
-            score = self._cam_right_score * 3.0
-
+        # ToF is physically on the servo head — it reads in the pan direction at all positions.
+        # Use it for every sample; camera variance scores were unreliable for heading selection.
+        score = self._front_clearance(tof, us)
         self._sweep_samples.append((world_h, score))
 
         self._servo_step += 1
@@ -457,16 +458,19 @@ class Navigator:
         if not candidates:
             candidates = self._sweep_samples  # nothing excluded, use all
 
-        best_h, best_c = max(candidates, key=lambda s: s[1])
-        self._commit_target = best_h
-        self._phase_t = now
-
-        if best_c < MIN_CLEARANCE:
-            # nothing open anywhere — back up
+        # Only commit to a heading that actually has room to drive into.
+        # TOF_STOP_DISTANCE * 1.5 ensures we don't pick a reading that will
+        # immediately re-trigger a stop on the first advance step.
+        driveable = [(h, c) for h, c in candidates if c > TOF_STOP_DISTANCE * 1.5]
+        if driveable:
+            best_h, best_c = max(driveable, key=lambda s: s[1])
+            self._commit_target = best_h
+            self._phase_t = now
+            self._phase = "commit"
+        else:
+            # Nothing open anywhere — back up and try from a new position
             self._phase        = "backup"
             self._backup_until = now + BACKUP_TIME
-        else:
-            self._phase = "commit"
 
     # ── RETURN ────────────────────────────────────────────────────────────────
 
@@ -480,13 +484,30 @@ class Navigator:
         """
         now = time.time()
 
-        # ── obstacle during return — use the same sweep logic as explore ──
+        # ── obstacle avoidance during return ──
         if self._phase in ("sweep", "commit", "backup"):
             cmd = self._explore_drive(tof, us, rx, ry, rtheta, [])
-            # Once the sweep resolves and we've advanced a bit, resume return
             if self._phase == "cruise":
                 self._phase = "return_drive"
             return cmd
+
+        # After committing to a clear heading, drive forward for BACKUP_TIME seconds
+        # to physically clear the obstacle before resuming return navigation.
+        # Previously missing: without this, _phase="advance" fell through to
+        # _phase="return_drive" every loop and the car never moved after a sweep.
+        if self._phase == "advance":
+            if self._return_advance_until == 0.0:
+                self._return_advance_until = now + BACKUP_TIME
+            if now < self._return_advance_until:
+                if self._is_blocked(tof, us):
+                    # Hit something new mid-advance — sweep again from here
+                    self._return_advance_until = 0.0
+                    self._start_sweep(rtheta, rx, ry)
+                    return MOTOR_STOP, MOTOR_STOP
+                self.motion = "forward"
+                return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED
+            # Advance time elapsed — resume return navigation
+            self._return_advance_until = 0.0
 
         self._phase = "return_drive"
 

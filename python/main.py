@@ -227,6 +227,7 @@ def action():
         if act == "explore":
             dead_reck.reset()
             vo.x = vo.y = vo.theta = 0.0
+            vo.prev_kp = vo.prev_des = None
             nav.start_exploration()
             sensor_reader.play_tune(1)   # happy birthday
         elif act == "return":

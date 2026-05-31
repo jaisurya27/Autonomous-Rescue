@@ -71,7 +71,11 @@ void set_indicator(int mode) {
         g_indicator = mode;
         noTone(BUZZER);
     }
-    g_led_on = false; g_beep_phase = 0;
+    g_led_on = false;
+    g_beep_until = 0;
+    // mode 2 beep-beep: start at phase 3 so first updateIndicator tick fires phase 0
+    // (first beep). Initialising at 0 skips phase 0 and starts with silence instead.
+    g_beep_phase = (mode == 2) ? 3 : 0;
 }
 
 // ---- motors (your TB6612: one dir pin per side) ----
@@ -166,7 +170,9 @@ void updateIndicator() {
         if (now >= g_beep_until) {
             noTone(BUZZER);
             g_indicator = g_prev_indicator;
-            g_led_on = false; g_beep_phase = 0;
+            g_led_on = false;
+            g_beep_until = 0;
+            g_beep_phase = (g_prev_indicator == 2) ? 3 : 0;
         }
         return;   // LED stays as-is during the beep
     }
