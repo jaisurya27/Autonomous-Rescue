@@ -25,15 +25,18 @@ from config import (MOTOR_BASE_SPEED, MOTOR_TURN_SPEED, MOTOR_REVERSE_SPEED, MOT
                     BACKUP_TIME, EXPLORATION_TIMEOUT,
                     STUCK_TIMEOUT, STUCK_MOVE_THRESHOLD, STUCK_REVERSE_TIME,
                     MAX_SWEEP_ATTEMPTS, RETURN_TURN_TIMEOUT, RETURN_US_STOP,
-                    SERVO_CENTER,
+                    SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT,
                     PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
 
 HEADING_TOLERANCE    = math.radians(15)
 MOTOR_APPROACH_SPEED = 35
 
-# The three car headings sampled during a sweep (relative to current heading, degrees).
-# LEFT 90 → face left, CENTER → straight ahead, RIGHT 90 → face right.
-SWEEP_OFFSETS = [90, 0, -90]
+# Car rotation steps during sweep (degrees from heading at sweep start).
+CAR_SWEEP_OFFSETS = [90, 0, -90]   # LEFT 90, CENTER, RIGHT 90
+
+# Servo pan angles for each car position (absolute servo degrees).
+# At each car angle the head pans LEFT, CENTER, RIGHT to give 3 camera samples.
+SERVO_SWEEP_POS = [SERVO_LEFT, SERVO_CENTER, SERVO_RIGHT]
 
 class NavState(Enum):
     IDLE="idle"; EXPLORE="explore"; APPROACH="approach"; RETURN="return"; ARRIVED="arrived"
@@ -57,12 +60,13 @@ class Navigator:
         self._phase_t = 0.0
 
         # sweep
-        self._sweep_samples    = []   # [(world_heading, clearance)]
-        self._sweep_step       = 0    # 0,1,2 → LEFT, CENTER, RIGHT
+        self._sweep_samples    = []   # [(world_heading, score)]
+        self._sweep_step       = 0    # car rotation index: 0=LEFT90, 1=CENTER, 2=RIGHT90
+        self._servo_step       = 0    # servo sub-step: 0=LEFT, 1=CENTER, 2=RIGHT
         self._sweep_start_h    = 0.0  # robot heading when sweep began
-        self._sweep_target_h   = 0.0  # heading the car is turning to for this step
+        self._sweep_target_h   = 0.0  # car heading target for current car step
         self._settle_t         = None
-        self._step_start_t     = 0.0  # per-step timeout for sweep pivots
+        self._step_start_t     = 0.0
         self._sweep_attempts   = 0
         self._sweep_ref_pos    = (0.0, 0.0)
 
@@ -81,6 +85,8 @@ class Navigator:
         # approach
         self._approach_logged  = False
         self._rtheta           = 0.0
+        self._cam_left_score   = 0.5
+        self._cam_right_score  = 0.5
 
         # return
         self._return_path        = []
@@ -116,6 +122,7 @@ class Navigator:
         self._phase_t          = 0.0
         self._sweep_samples    = []
         self._sweep_step       = 0
+        self._servo_step       = 0
         self._settle_t         = None
         self._step_start_t     = 0.0
         self._sweep_attempts   = 0
@@ -144,9 +151,13 @@ class Navigator:
 
     # ── main entry ───────────────────────────────────────────────────────────
 
-    def compute_command(self, tof, us, rx, ry, rtheta, detections, cam_blocked=False):
+    def compute_command(self, tof, us, rx, ry, rtheta, detections,
+                        cam_blocked=False, cam_left_score=0.5, cam_right_score=0.5):
         # store for use in _check_stuck which doesn't receive rtheta directly
         self._rtheta = rtheta
+        # store camera scores so sweep can use them when reading servo positions
+        self._cam_left_score  = cam_left_score
+        self._cam_right_score = cam_right_score
 
         if self.state in (NavState.IDLE, NavState.ARRIVED):
             self.motion = "stop"
@@ -169,7 +180,7 @@ class Navigator:
         if self.state == NavState.APPROACH:
             return self._approach_drive(tof, us, detections, rx, ry, rtheta)
 
-        return self._explore_drive(tof, us, rx, ry, rtheta, detections)
+        return self._explore_drive(tof, us, rx, ry, rtheta, detections, cam_blocked)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -263,7 +274,7 @@ class Navigator:
 
     # ── EXPLORE ───────────────────────────────────────────────────────────────
 
-    def _explore_drive(self, tof, us, rx, ry, rtheta, detections):
+    def _explore_drive(self, tof, us, rx, ry, rtheta, detections, cam_blocked=False):
         now = time.time()
 
         # ── CRUISE ──────────────────────────────────────────────────────────
@@ -274,7 +285,13 @@ class Navigator:
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
 
+            # Hard stop: US or ToF within threshold
             if self._is_blocked(tof, us):
+                self._start_sweep(rtheta, rx, ry)
+                return MOTOR_STOP, MOTOR_STOP
+
+            # Pre-emptive: camera sees obstacle while still far enough to act
+            if cam_blocked:
                 self._start_sweep(rtheta, rx, ry)
                 return MOTOR_STOP, MOTOR_STOP
 
@@ -346,63 +363,86 @@ class Navigator:
             print(f"[nav] {self._sweep_attempts} sweeps no progress — backing up")
             self._sweep_attempts = 0
             self._sweep_ref_pos  = (rx, ry)
-            self._phase       = "backup"
-            self._backup_until = now + BACKUP_TIME
+            self._phase          = "backup"
+            self._backup_until   = now + BACKUP_TIME
             self.motion = "stop"
+            self._set_servo(SERVO_CENTER)
             return
 
         self._sweep_samples  = []
-        self._sweep_step     = 0
+        self._sweep_step     = 0    # which car rotation (0=LEFT90, 1=CENTER, 2=RIGHT90)
+        self._servo_step     = 0    # which servo pan within current car step
         self._sweep_start_h  = rtheta
         self._settle_t       = None
         self._phase          = "sweep"
         self._phase_t        = now
-        self._step_start_t   = now   # per-step timeout timer
-        # first target: turn car LEFT 90° from current heading
-        self._sweep_target_h = _wrap(rtheta + math.radians(SWEEP_OFFSETS[0]))
+        self._step_start_t   = now
+        # start by turning car LEFT 90°
+        self._sweep_target_h = _wrap(rtheta + math.radians(CAR_SWEEP_OFFSETS[0]))
         self.motion = "stop"
 
     def _sweep_step_exec(self, tof, us, rtheta, now, rx, ry):
-        """Rotate car to LEFT-90 / CENTER / RIGHT-90, read clearance, pick best.
-
-        Each step has its own timeout tracked by _step_start_t so a slow-turning
-        car on step 2 or 3 doesn't immediately time out using the sweep-start time.
+        """3 car rotations × 3 servo positions = 9 viewpoints.
+        Car rotates to LEFT-90 / CENTER / RIGHT-90.
+        At each car position, servo pans LEFT / CENTER / RIGHT.
+        US clearance is used when servo is centered; camera scores when panned.
+        Picks the world heading with the best combined score.
         """
-        if self._sweep_step >= len(SWEEP_OFFSETS):
+        if self._sweep_step >= len(CAR_SWEEP_OFFSETS):
             self._finish_sweep(rtheta, now)
             return MOTOR_STOP, MOTOR_STOP
 
-        # ── A: pivot to the target heading for this step ──
-        if self._settle_t is None:
+        # ── A: rotate car to target heading (only at start of each car step) ──
+        if self._servo_step == 0 and self._settle_t is None:
             err = _ang_diff(self._sweep_target_h, rtheta)
-            step_elapsed = now - self._step_start_t
-            timed_out = step_elapsed > PIVOT_STEP_TIMEOUT
-
+            timed_out = (now - self._step_start_t) > PIVOT_STEP_TIMEOUT
             if abs(err) > HEADING_TOLERANCE and not timed_out:
                 return self._pivot(+1 if err > 0 else -1)
-
-            # reached heading (or timed out) — start settle window
+            # car reached angle — move servo to first position and start settle
+            self._set_servo(SERVO_SWEEP_POS[0])
             self._settle_t = now
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        # ── B: wait for sensors to settle ──
-        if (now - self._settle_t) < SWEEP_SETTLE_S:
+        # ── B: settle (servo moved or car just stopped) ──
+        if self._settle_t is not None and (now - self._settle_t) < SWEEP_SETTLE_S:
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        # ── C: record clearance at this heading ──
-        clearance = self._front_clearance(tof, us)
-        self._sweep_samples.append((_wrap(rtheta), clearance))
+        # ── C: record sample at current car+servo position ──
+        servo_pos = SERVO_SWEEP_POS[self._servo_step]
+        servo_offset_rad = math.radians(servo_pos - SERVO_CENTER)
+        world_h = _wrap(rtheta + servo_offset_rad)
 
-        self._sweep_step += 1
+        if servo_pos == SERVO_CENTER:
+            score = self._front_clearance(tof, us)
+        elif servo_pos == SERVO_LEFT:
+            score = self._cam_left_score * 3.0    # scale ~0-3 m equivalent
+        else:
+            score = self._cam_right_score * 3.0
+
+        self._sweep_samples.append((world_h, score))
+
+        self._servo_step += 1
         self._settle_t    = None
-        self._step_start_t = now   # reset per-step timer for next step
 
-        if self._sweep_step < len(SWEEP_OFFSETS):
+        if self._servo_step < len(SERVO_SWEEP_POS):
+            # move servo to next pan position
+            self._set_servo(SERVO_SWEEP_POS[self._servo_step])
+            self._settle_t = now
+            return MOTOR_STOP, MOTOR_STOP
+
+        # all servo sub-steps done for this car position — recenter servo, advance car step
+        self._set_servo(SERVO_CENTER)
+        self._servo_step   = 0
+        self._sweep_step  += 1
+        self._step_start_t = now
+
+        if self._sweep_step < len(CAR_SWEEP_OFFSETS):
             self._sweep_target_h = _wrap(
-                self._sweep_start_h + math.radians(SWEEP_OFFSETS[self._sweep_step])
+                self._sweep_start_h + math.radians(CAR_SWEEP_OFFSETS[self._sweep_step])
             )
+            self._settle_t = now   # brief settle before next car rotation
 
         self.motion = "stop"
         return MOTOR_STOP, MOTOR_STOP

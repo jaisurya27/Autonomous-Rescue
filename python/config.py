@@ -29,7 +29,7 @@ MOTOR_TURN_SPEED = 40
 MOTOR_STOP = 0
 
 # --- Recon / obstacle avoidance ---
-US_STOP_DISTANCE      = 0.10   # front ultrasonic hard stop (m) [10 cm]
+US_STOP_DISTANCE      = 0.18   # front ultrasonic hard stop (m) [18 cm]
 TOF_STOP_DISTANCE     = 0.25   # head ToF stop when centered (m)
 SWEEP_SETTLE_S        = 0.7    # wait after each servo/pivot step before reading (longer = camera stabilises)
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end

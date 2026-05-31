@@ -40,11 +40,12 @@ status = {"state":"idle","speed":0,"heading":0,"distance_traveled":0,
           "vo_matches":0,"vo_inliers":0}
 
 def _emergency_stop():
-    """Called on app stop / SIGTERM — kills motors and indicator immediately."""
+    """Called on app stop / SIGTERM — kills motors, plays fade-out, LEDs off."""
     try:
         sensor_reader.send_command(0, 0)
-        sensor_reader.send_command(0, 0)   # send twice in case first is dropped
-        sensor_reader.set_indicator(0)     # LEDs off, buzzer silent
+        sensor_reader.send_command(0, 0)
+        sensor_reader.play_tune(2)         # fade-out beeps on shutdown
+        sensor_reader.set_indicator(0)
     except Exception:
         pass
 
@@ -139,7 +140,9 @@ def control_loop():
                 fs.tof_distance if fs.valid else 0.0,
                 fs.us_distance  if fs.valid else 0.0,
                 px, py, pth, confirmed,
-                cam_blocked=path_vision.path_blocked)
+                cam_blocked     = path_vision.path_blocked,
+                cam_left_score  = path_vision.left_score,
+                cam_right_score = path_vision.right_score)
         sensor_reader.send_command(left, right)
 
         # ── indicator LED / buzzer ──
@@ -225,10 +228,12 @@ def action():
             dead_reck.reset()
             vo.x = vo.y = vo.theta = 0.0
             nav.start_exploration()
+            sensor_reader.play_tune(1)   # happy birthday
         elif act == "return":
             nav.start_return(dead_reck.breadcrumbs)
         elif act == "stop":
             nav.stop()
+            sensor_reader.play_tune(2)   # fade-out beeps
     # always send a stop command immediately so MCU doesn't coast
     sensor_reader.send_command(0, 0)
     return jsonify({"ok":True, "state":nav.state_name})

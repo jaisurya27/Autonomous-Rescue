@@ -28,7 +28,9 @@ const int BUZZER    = 10;
 
 // Front HC-SR04 (body-fixed). Elegoo V4 standard; swap if us always reads 0.
 const int US_TRIG = 13, US_ECHO = 12;
-const unsigned long US_TIMEOUT_US = 12000;   // ~2 m cap (limits servo jitter)
+const unsigned long US_TIMEOUT_US = 15000;   // ~2.5 m cap
+const float US_MAX_CM    = 250.0;            // clamp: anything above this is noise
+const float US_MAX_JUMP  = 100.0;            // reject single-step jumps > this cm
 
 ModulinoMovement imu;
 ModulinoDistance tof;
@@ -101,6 +103,60 @@ void servoPulse() {
     digitalWrite(SERVO_PIN, LOW);
 }
 
+// ---- tunes (non-blocking, driven from loop) ----
+// Tune IDs: 1 = happy birthday (~10s), 2 = fade-out beeps (~5s)
+// Each entry: {freq_hz, duration_ms}. 0 freq = rest.
+struct Note { uint16_t freq; uint16_t dur; };
+
+static const Note TUNE_BIRTHDAY[] PROGMEM = {
+    {264,200},{264,200},{0,50},{296,300},{264,300},{352,300},{330,600},{0,150},
+    {264,200},{264,200},{0,50},{296,300},{264,300},{396,300},{352,600},{0,150},
+    {264,200},{264,200},{0,50},{528,300},{440,300},{352,300},{330,300},{296,600},{0,150},
+    {470,200},{470,200},{0,50},{440,300},{352,300},{396,300},{352,600},{0,300}
+};
+static const Note TUNE_FADEOUT[] PROGMEM = {
+    {880,120},{0,60},{780,110},{0,60},{680,100},{0,60},
+    {580,90}, {0,60},{480,80}, {0,60},{380,70}, {0,60},
+    {280,60}, {0,60},{200,50}, {0,80},{140,40}, {0,100},
+    {100,30}, {0,200}
+};
+static const uint8_t TUNE_BIRTHDAY_LEN = sizeof(TUNE_BIRTHDAY)/sizeof(Note);
+static const uint8_t TUNE_FADEOUT_LEN  = sizeof(TUNE_FADEOUT)/sizeof(Note);
+
+int            g_tune_id   = 0;   // 0=off, 1=birthday, 2=fadeout
+uint8_t        g_tune_note = 0;
+unsigned long  g_tune_until = 0;
+
+void play_tune(int id) {
+    g_tune_id   = id;
+    g_tune_note = 0;
+    g_tune_until = 0;
+    noTone(BUZZER);
+    // reset indicator beep so they don't fight
+    g_beep_until = 0;
+}
+
+void updateTune() {
+    if (g_tune_id == 0) return;
+    unsigned long now = millis();
+    if (now < g_tune_until) return;   // still playing current note
+
+    const Note* tune;
+    uint8_t len;
+    if (g_tune_id == 1) { tune = TUNE_BIRTHDAY; len = TUNE_BIRTHDAY_LEN; }
+    else                { tune = TUNE_FADEOUT;  len = TUNE_FADEOUT_LEN;  }
+
+    if (g_tune_note >= len) {
+        g_tune_id = 0; noTone(BUZZER); return;
+    }
+    Note n;
+    memcpy_P(&n, &tune[g_tune_note], sizeof(Note));
+    g_tune_note++;
+    g_tune_until = now + n.dur;
+    if (n.freq > 0) tone(BUZZER, n.freq);
+    else            noTone(BUZZER);
+}
+
 // ---- indicator update (call every loop, non-blocking) ----
 void updateIndicator() {
     unsigned long now = millis();
@@ -150,7 +206,11 @@ float readUltrasonicCm() {
     digitalWrite(US_TRIG, LOW);
     unsigned long dur = pulseIn(US_ECHO, HIGH, US_TIMEOUT_US);
     if (dur == 0) return 0.0;
-    return dur / 58.0;                  // ~58 us per cm round-trip
+    float cm = dur / 58.0;
+    if (cm > US_MAX_CM) return 0.0;                          // clamp noise
+    if (g_us_cm > 0.0 && fabsf(cm - g_us_cm) > US_MAX_JUMP) // debounce big jump
+        return g_us_cm;
+    return cm;
 }
 
 // ---- sensors (CSV in the order their Python expects) ----
@@ -198,6 +258,7 @@ void setup() {
     Bridge.provide("set_servo",     set_servo);
     Bridge.provide("get_servo",     get_servo);
     Bridge.provide("set_indicator", set_indicator);
+    Bridge.provide("play_tune",     play_tune);
 }
 
 void loop() {
@@ -206,6 +267,7 @@ void loop() {
     if (now - lastRefresh >= REFRESH_MS) { lastRefresh = now; refreshSensors(); }
     // US before Bridge so pulseIn never blocks mid-call (prevents heap corruption).
     if (now - lastUS >= US_INTERVAL_MS)  { lastUS = now; g_us_cm = readUltrasonicCm(); }
-    updateIndicator();
+    updateTune();
+    if (g_tune_id == 0) updateIndicator();  // don't let indicator beeps fight the tune
     Bridge.update();
 }

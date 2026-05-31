@@ -71,3 +71,8 @@ class SensorReader:
         # 0=off 1=explore(solid blue) 2=sweep(blink red+beep) 3=return(blink green) 4=person(beep)
         try: Bridge.call("set_indicator", int(mode))
         except Exception: pass
+
+    def play_tune(self, tune_id):
+        # 1=happy birthday (~10s), 2=fade-out beeps (~5s)
+        try: Bridge.call("play_tune", int(tune_id))
+        except Exception: pass
