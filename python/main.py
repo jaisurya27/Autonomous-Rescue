@@ -237,7 +237,8 @@ def camera_frame():
 @app.route("/api/manual", methods=["POST"])
 def manual_control():
     global manual_mode, _manual_left, _manual_right
-    cmd = request.get_json().get("cmd", "")
+    data = request.get_json()
+    cmd  = data.get("cmd", "")
     STEP = 20   # servo degrees per camera pan press
 
     if cmd == "on":
@@ -252,10 +253,11 @@ def manual_control():
         sensor_reader.send_command(0, 0)
 
     elif manual_mode:
-        if   cmd == "forward": _manual_left, _manual_right =  MOTOR_BASE_SPEED,  MOTOR_BASE_SPEED
-        elif cmd == "back":    _manual_left, _manual_right = -MOTOR_REVERSE_SPEED, -MOTOR_REVERSE_SPEED
-        elif cmd == "left":    _manual_left, _manual_right = -MOTOR_TURN_SPEED,  MOTOR_TURN_SPEED
-        elif cmd == "right":   _manual_left, _manual_right =  MOTOR_TURN_SPEED, -MOTOR_TURN_SPEED
+        spd = max(45, min(200, int(data.get("speed", MOTOR_BASE_SPEED))))
+        if   cmd == "forward": _manual_left, _manual_right =  spd,  spd
+        elif cmd == "back":    _manual_left, _manual_right = -spd, -spd
+        elif cmd == "left":    _manual_left, _manual_right = -spd,  spd
+        elif cmd == "right":   _manual_left, _manual_right =  spd, -spd
         elif cmd == "stop":    _manual_left = _manual_right = 0
         elif cmd == "cam_left":
             angle = max(SERVO_RIGHT, nav.servo_angle - STEP)

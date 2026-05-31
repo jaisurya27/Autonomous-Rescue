@@ -43,6 +43,10 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
 .dpad-wrap{display:none;margin-top:6px}
 .dpad-wrap.visible{display:block}
 .dpad-hint{font-size:9px;color:var(--tx2);margin-bottom:6px;text-align:center;letter-spacing:1px}
+.speed-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.speed-row label{font-size:9px;color:var(--tx2);white-space:nowrap;text-transform:uppercase;letter-spacing:1px}
+.speed-row input[type=range]{flex:1;accent-color:var(--ac)}
+.speed-val{font-size:11px;color:var(--ac);font-weight:500;min-width:36px;text-align:right}
 .dpad{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:6px}
 .dp{padding:10px 0;border:1px solid var(--bd);border-radius:5px;background:var(--sf2);
 color:var(--tx);font-family:inherit;font-size:16px;cursor:pointer;user-select:none;
@@ -104,6 +108,12 @@ text-align:center;touch-action:none;transition:background .1s}
   <!-- Manual D-pad (shown when manual mode is on) -->
   <div class="dpad-wrap" id="dpadWrap">
     <div class="dpad-hint">WASD · Q/E = cam · Space = stop</div>
+    <div class="speed-row">
+      <label>Speed</label>
+      <input type="range" id="speedSlider" min="1" max="100" value="35"
+             oninput="updateSpeed(this.value)">
+      <span class="speed-val" id="speedVal">35%</span>
+    </div>
     <div class="dpad">
       <button class="dp empty"></button>
       <button class="dp" id="dpFwd"   data-cmd="forward">▲</button>
@@ -419,12 +429,21 @@ async function doAction(a) {
 let isManual = false;
 let holdInterval = null;
 let heldKeys = {};
+let manualSpeedPct = 35;  // 1-100%
+
+// Maps percentage to PWM: 1% → 50, 100% → 200
+function pctToPwm(pct) { return Math.max(50, Math.round(50 + (200 - 50) * pct / 100)); }
+
+function updateSpeed(val) {
+  manualSpeedPct = parseInt(val);
+  document.getElementById('speedVal').textContent = manualSpeedPct + '%';
+}
 
 async function sendManual(cmd) {
   try {
     await fetch('/api/manual', {method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({cmd})});
+      body: JSON.stringify({cmd, speed: pctToPwm(manualSpeedPct)})});
   } catch(e) {}
 }
 
