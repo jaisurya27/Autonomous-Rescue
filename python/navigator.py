@@ -28,7 +28,7 @@ from config import (MOTOR_BASE_SPEED, MOTOR_SLOW_SPEED, MOTOR_TURN_SPEED, MOTOR_
                     MAX_SWEEP_ATTEMPTS, RETURN_TURN_TIMEOUT,
                     SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT, SERVO_BEARING_SIGN,
                     CAR_SURVEY_OFFSETS, SERVO_SCAN_STEP_DEG, SERVO_SCAN_INTERVAL,
-                    GREEDY_COMMIT_SCORE,
+                    GREEDY_COMMIT_SCORE, CAMERA_CLEAR_THRESHOLD,
                     PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
 
 HEADING_TOLERANCE    = math.radians(15)
@@ -333,25 +333,27 @@ class Navigator:
                 self._start_sweep(rtheta, rx, ry)
                 return MOTOR_STOP, MOTOR_STOP
 
-            # Graduated slow-down: scale speed between warn and stop distances.
-            if 0.01 < tof < TOF_WARN_DISTANCE:
-                factor = (tof - TOF_STOP_DISTANCE) / (TOF_WARN_DISTANCE - TOF_STOP_DISTANCE)
+            # Graduated slow-down using forward-cached ToF (not panned reading).
+            if 0.01 < self._tof_forward < TOF_WARN_DISTANCE:
+                factor = (self._tof_forward - TOF_STOP_DISTANCE) / (TOF_WARN_DISTANCE - TOF_STOP_DISTANCE)
                 speed = max(MOTOR_SLOW_SPEED, int(MOTOR_BASE_SPEED * max(0.0, min(1.0, factor))))
-                # Snap servo to centre when approaching so ToF reads forward accurately
-                self._set_servo(SERVO_CENTER)
             else:
                 speed = MOTOR_BASE_SPEED
-                # Slowly oscillate servo for wider occupancy-grid coverage while cruising.
-                if now - self._servo_scan_t >= SERVO_SCAN_INTERVAL:
-                    self._servo_scan_t = now
-                    new_angle = self.servo_angle + self._cruise_servo_dir * SERVO_SCAN_STEP_DEG
-                    if new_angle >= SERVO_LEFT:
-                        new_angle = SERVO_LEFT
-                        self._cruise_servo_dir = -1
-                    elif new_angle <= SERVO_RIGHT:
-                        new_angle = SERVO_RIGHT
-                        self._cruise_servo_dir = 1
-                    self._set_servo(int(new_angle))
+
+            # Servo always scans L→C→R while moving — builds occupancy grid
+            # and gives the navigator live ToF+camera readings in all directions.
+            # _is_blocked uses _tof_forward (cached when near centre) so panned
+            # readings no longer cause false obstacle stops.
+            if now - self._servo_scan_t >= SERVO_SCAN_INTERVAL:
+                self._servo_scan_t = now
+                new_angle = self.servo_angle + self._cruise_servo_dir * SERVO_SCAN_STEP_DEG
+                if new_angle >= SERVO_LEFT:
+                    new_angle = SERVO_LEFT
+                    self._cruise_servo_dir = -1
+                elif new_angle <= SERVO_RIGHT:
+                    new_angle = SERVO_RIGHT
+                    self._cruise_servo_dir = 1
+                self._set_servo(int(new_angle))
 
             self._sweep_attempts = 0
             self.motion = "forward"
@@ -475,11 +477,26 @@ class Navigator:
         servo_offset_rad = math.radians((servo_pos - SERVO_CENTER) * SERVO_BEARING_SIGN)
         world_h = _wrap(rtheta + servo_offset_rad)
 
-        # Score = ToF distance in this pan direction.
-        # ToF is physically on the servo head so it measures exactly what the
-        # servo is pointing at.  0 reading = out-of-range (OOR) → treated as 99 m.
-        # Camera is used for person detection only, not for route decisions.
-        score = self._front_clearance(tof, us)   # 0.01–2 m or 99 if OOR
+        # Score = clearance in this pan direction.
+        # ToF is on the servo head → direct distance in whatever direction servo points.
+        # Camera center_score (middle strip) shows what the head is pointing at after settle.
+        # A direction is clear if EITHER:
+        #   - ToF reads far / OOR (no obstacle detected by laser), OR
+        #   - Camera sees open space (low variance in centre = no wall/object in shot)
+        tof_score = self._front_clearance(tof, us)   # 0.01–2 m or 99 if OOR
+        cam_clear = self._cam_center_score >= CAMERA_CLEAR_THRESHOLD
+
+        if tof_score >= GREEDY_COMMIT_SCORE:
+            # ToF says clearly open — trust it
+            score = tof_score
+        elif tof_score > TOF_STOP_DISTANCE and cam_clear:
+            # ToF is in marginal zone (0.20–0.50m) — could be a weak echo or thin object.
+            # Camera confirms open space → treat as clear.
+            score = GREEDY_COMMIT_SCORE
+        else:
+            # ToF reads a real obstacle (< 0.20m) or camera also sees obstacle.
+            # Camera cannot override a hard ToF block.
+            score = tof_score
         self._sweep_samples.append((world_h, score))
 
         # ── Greedy commit: act immediately on the first clearly-open direction ──

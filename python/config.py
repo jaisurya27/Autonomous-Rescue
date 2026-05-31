@@ -37,9 +37,9 @@ RETURN_TOF_STOP       = 0.20   # ToF obstacle threshold during return
 SWEEP_SETTLE_S        = 0.45   # wait after each servo/pivot step before reading
                                # 0.45s: servo physically settles + 1-2 camera frames captured
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
-GREEDY_COMMIT_SCORE   = 0.50   # ToF distance (m) above which a direction is "clearly clear"
-                                # Score is now pure ToF: OOR (→99) always triggers, 0.5m+ triggers,
-                                # anything < TOF_STOP_DISTANCE (0.20m) never triggers.
+GREEDY_COMMIT_SCORE   = 0.50   # distance (m) above which a direction is "clearly clear"
+CAMERA_CLEAR_THRESHOLD = 0.40  # center_score above this = camera sees open space
+                                # (1.0 - variance/CAM_OBSTACLE_VARIANCE; 0=wall, 1=open floor)
 PIVOT_STEP_TIMEOUT    = 4.0    # s, safety cap per pivot step
 BACKUP_TIME           = 1.8    # s reverse on dead end / stuck (longer = more clearance gained)
 MOTOR_REVERSE_SPEED   = 65     # reverse speed (needs more than stall ~45, more than forward)
