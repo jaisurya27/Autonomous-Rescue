@@ -20,11 +20,11 @@ Camera signal: NOT used for obstacle stopping. Only US + ToF stop the car.
 import math, time
 from enum import Enum
 from config import (MOTOR_BASE_SPEED, MOTOR_TURN_SPEED, MOTOR_REVERSE_SPEED, MOTOR_STOP,
-                    US_STOP_DISTANCE, TOF_STOP_DISTANCE,
+                    TOF_STOP_DISTANCE, RETURN_TOF_STOP,
                     SWEEP_SETTLE_S, MIN_CLEARANCE, PIVOT_STEP_TIMEOUT,
                     BACKUP_TIME, EXPLORATION_TIMEOUT,
                     STUCK_TIMEOUT, STUCK_MOVE_THRESHOLD, STUCK_REVERSE_TIME,
-                    MAX_SWEEP_ATTEMPTS, RETURN_TURN_TIMEOUT, RETURN_US_STOP,
+                    MAX_SWEEP_ATTEMPTS, RETURN_TURN_TIMEOUT,
                     SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT,
                     PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
 
@@ -198,18 +198,14 @@ class Navigator:
         self.motion = "stop"
         return -MOTOR_REVERSE_SPEED, -MOTOR_REVERSE_SPEED
 
-    def _is_blocked(self, tof, us):
-        """Hard stops only — US and centered ToF. No camera signal."""
-        us_hit  = (0.01 < us < US_STOP_DISTANCE)
-        tof_hit = (abs(self.servo_angle - SERVO_CENTER) < 5 and 0.01 < tof < TOF_STOP_DISTANCE)
-        return us_hit or tof_hit
+    def _is_blocked(self, tof, _us=None):
+        """ToF is the sole obstacle sensor. It's on the pan head so it reads
+        in whatever direction the servo is currently pointing."""
+        return 0.01 < tof < TOF_STOP_DISTANCE
 
-    def _front_clearance(self, tof, us):
-        """Best forward distance reading."""
-        vals = [us if us > 0.01 else 99.0]
-        if abs(self.servo_angle - SERVO_CENTER) < 5:
-            vals.append(tof if tof > 0.01 else 99.0)
-        return min(vals)
+    def _front_clearance(self, tof, _us=None):
+        """Distance reading from ToF. 0 or invalid → treat as open (99 m)."""
+        return tof if tof > 0.01 else 99.0
 
     # ── stuck detection ───────────────────────────────────────────────────────
 
@@ -248,10 +244,10 @@ class Navigator:
     # ── APPROACH ─────────────────────────────────────────────────────────────
 
     def _approach_drive(self, tof, us, detections, rx, ry, rtheta):
-        us_close   = (0.01 < us < PERSON_APPROACH_DIST)
+        tof_close  = (0.01 < tof < PERSON_APPROACH_DIST)
         bbox_close = any((d.bbox[3]-d.bbox[1]) >= PERSON_BBOX_CLOSE_PX for d in detections)
 
-        if us_close or bbox_close:
+        if tof_close or bbox_close:
             self.state  = NavState.EXPLORE
             self._phase = "cruise"
             self._set_servo(SERVO_CENTER)
@@ -502,7 +498,7 @@ class Navigator:
             return MOTOR_STOP, MOTOR_STOP
 
         # ── obstacle check — trigger sweep ──
-        if 0.01 < us < RETURN_US_STOP:
+        if 0.01 < tof < RETURN_TOF_STOP:
             self._start_sweep(rtheta, rx, ry)
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP

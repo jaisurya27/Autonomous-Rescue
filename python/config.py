@@ -29,8 +29,9 @@ MOTOR_TURN_SPEED = 40
 MOTOR_STOP = 0
 
 # --- Recon / obstacle avoidance ---
-US_STOP_DISTANCE      = 0.18   # front ultrasonic hard stop (m) [18 cm]
-TOF_STOP_DISTANCE     = 0.25   # head ToF stop when centered (m)
+US_STOP_DISTANCE      = 0.18   # kept for dashboard display only — not used for obstacle logic
+TOF_STOP_DISTANCE     = 0.20   # ToF hard stop (m). ToF is primary obstacle sensor.
+RETURN_TOF_STOP       = 0.20   # ToF obstacle threshold during return
 SWEEP_SETTLE_S        = 0.7    # wait after each servo/pivot step before reading (longer = camera stabilises)
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
 PIVOT_STEP_TIMEOUT    = 3.0    # s, safety cap per pivot step (longer at low turn speed)
