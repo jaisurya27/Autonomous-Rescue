@@ -34,6 +34,11 @@ from config import (MOTOR_BASE_SPEED, MOTOR_SLOW_SPEED, MOTOR_TURN_SPEED, MOTOR_
 HEADING_TOLERANCE    = math.radians(15)
 MOTOR_APPROACH_SPEED = 35
 
+# On an obstacle the car should deflect at most this far from its original
+# heading — a left/right turn within 90°, never a near-180° turn-around.
+# Keeps the rover making forward progress instead of doubling back.
+MAX_DEFLECTION = math.radians(90)
+
 # Car rotation steps during sweep (degrees from heading at sweep start).
 CAR_SWEEP_OFFSETS = [0, 90, -90]   # CENTER first, then LEFT 90, RIGHT 90
 # Scanning at current heading first → greedy can fire in < 1 settle period.
@@ -532,10 +537,10 @@ class Navigator:
             return self._tof_forward if self._tof_forward > 0.01 else 99.0
 
         def _try_opportunistic(heading):
-            """Commit to `heading` immediately if it is clear and not backward."""
-            back_h   = _wrap(self._sweep_start_h + math.pi)
-            not_back = abs(_ang_diff(heading, back_h)) > math.radians(30)
-            if not_back and _fwd_clear() >= GREEDY_COMMIT_SCORE:
+            """Commit to `heading` immediately if it is clear and within the
+            ±90° deflection cap (no turning around)."""
+            within_90 = abs(_ang_diff(heading, self._sweep_start_h)) <= MAX_DEFLECTION
+            if within_90 and _fwd_clear() >= GREEDY_COMMIT_SCORE:
                 print(f"[nav] opportunistic → {math.degrees(heading):.0f}° "
                       f"(tof_fwd={_fwd_clear():.2f}m)")
                 self._commit_target = heading
@@ -604,10 +609,11 @@ class Navigator:
 
         # ── Greedy commit: act immediately on the first clearly-open direction ──
         # Don't wait for all N samples — if this direction is definitively clear,
-        # commit now. Exclude backward direction to avoid turning around needlessly.
-        back_h = _wrap(self._sweep_start_h + math.pi)
-        not_backward = abs(_ang_diff(world_h, back_h)) > math.radians(30)
-        if score >= GREEDY_COMMIT_SCORE and not_backward:
+        # commit now. Only accept headings within ±90° of the original forward
+        # heading so the car deflects left/right and keeps progressing, never a
+        # near-180° turn-around.
+        within_90 = abs(_ang_diff(world_h, self._sweep_start_h)) <= MAX_DEFLECTION
+        if score >= GREEDY_COMMIT_SCORE and within_90:
             print(f"[nav] greedy commit → {math.degrees(world_h):.0f}° (score={score:.1f})")
             self._commit_target = world_h
             self._phase_t       = now
@@ -649,15 +655,15 @@ class Navigator:
             return
 
         # For a full 360° survey every direction was intentionally sampled, so use all.
-        # For a 3-position obstacle sweep, exclude headings within 30° of where we came
-        # from to avoid the car immediately turning back into the obstacle.
+        # For a 3-position obstacle sweep, keep only headings within ±90° of the
+        # original forward heading: the car deflects left/right and keeps making
+        # forward progress instead of turning around into where it came from.
         if self._sweep_full:
             candidates = self._sweep_samples
         else:
-            back_h = _wrap(self._sweep_start_h + math.pi)
             candidates = [
                 (h, c) for h, c in self._sweep_samples
-                if abs(_ang_diff(h, back_h)) > math.radians(30)
+                if abs(_ang_diff(h, self._sweep_start_h)) <= MAX_DEFLECTION
             ]
             if not candidates:
                 candidates = self._sweep_samples

@@ -166,15 +166,23 @@ const CS = 4; // cell size in pixels
 let latestMapData = null;
 
 function drawMap(d) {
+  // Guard against a malformed/empty frame — a bad frame must not wipe the map
+  // to a blank grey canvas. Keep the last good render instead.
+  if (!d || !Array.isArray(d.cells) || !d.width || !d.height) return;
   latestMapData = d;
   const w = d.width, h = d.height;
   cv.width = w * CS; cv.height = h * CS;
-  for (let y = 0; y < h; y++)
+  for (let y = 0; y < h; y++) {
+    const row = d.cells[y];
+    if (!row) continue;
     for (let x = 0; x < w; x++) {
-      const v = d.cells[y][x];
+      let v = row[x];
+      if (v == null || isNaN(v)) v = 127;          // unknown → grey, never invalid
+      v = Math.max(0, Math.min(255, v|0));
       ctx.fillStyle = `rgb(${v},${v},${v})`;
       ctx.fillRect(x*CS, y*CS, CS, CS);
     }
+  }
   // Breadcrumb trail
   if (d.breadcrumbs && d.breadcrumbs.length > 1) {
     ctx.strokeStyle = '#4ade8066'; ctx.lineWidth = 1.5; ctx.beginPath();
@@ -192,7 +200,8 @@ function drawMap(d) {
   }
   // Robot
   const rx = d.robot_x*CS+CS/2, ry = d.robot_y*CS+CS/2;
-  ctx.save(); ctx.translate(rx, ry); ctx.rotate(-d.robot_theta);
+  const rth = isNaN(d.robot_theta) ? 0 : d.robot_theta;
+  ctx.save(); ctx.translate(rx, ry); ctx.rotate(-rth);
   ctx.fillStyle = '#38bdf8'; ctx.beginPath();
   ctx.moveTo(10,0); ctx.lineTo(-6,-5); ctx.lineTo(-6,5); ctx.closePath(); ctx.fill();
   ctx.restore();

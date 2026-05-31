@@ -45,10 +45,15 @@ class OccupancyGrid:
 
     def add_threat(self, wx, wy, label="person", confidence=0.0):
         """Add threat only if no existing threat is within THREAT_DEDUP_DISTANCE cells."""
+        if not (math.isfinite(wx) and math.isfinite(wy)):
+            return
         gx = int(START_X + wx / GRID_RESOLUTION)
         gy = int(START_Y + wy / GRID_RESOLUTION)
-        if not (0 <= gx < GRID_WIDTH and 0 <= gy < GRID_HEIGHT):
-            return
+        # A distant/edge detection used to be silently DROPPED when it projected
+        # outside the grid — that's why confirmed persons never showed in the UI.
+        # Clamp into bounds instead so the marker still appears (at the edge).
+        gx = max(0, min(GRID_WIDTH - 1, gx))
+        gy = max(0, min(GRID_HEIGHT - 1, gy))
         # Dedup: if a threat of the same label already exists nearby, treat this
         # as the same person. Keep the higher-confidence sighting (and its
         # position) instead of dropping a permanent marker at the first noisy hit.
@@ -94,14 +99,19 @@ class OccupancyGrid:
             if (y1 - y0) < MIN_HALF * 2:
                 y0 = max(0, robot_gy - MIN_HALF); y1 = min(GRID_HEIGHT, robot_gy + MIN_HALF)
         cropped = self.grid[y0:y1, x0:x1]
-        prob = 1.0 - 1.0 / (1.0 + np.exp(cropped))
+        # clip before exp() so a runaway log-odds value can't overflow to inf/NaN
+        prob = 1.0 - 1.0 / (1.0 + np.exp(np.clip(cropped, L_MIN, L_MAX)))
         display = ((1.0 - prob) * 255).astype(np.uint8)
+        # robot_theta can be NaN if pose math ever divided by zero — never ship NaN
+        rtheta = float(robot_theta)
+        if not math.isfinite(rtheta):
+            rtheta = 0.0
         return {
             "cells": display.tolist(),
             "x_min": int(x0), "y_min": int(y0),
             "width": int(x1 - x0), "height": int(y1 - y0),
             "robot_x": int(robot_gx - x0), "robot_y": int(robot_gy - y0),
-            "robot_theta": float(robot_theta),
+            "robot_theta": rtheta,
             "threats": [
                 {"x": int(tx-x0), "y": int(ty-y0), "label": tl, "conf": float(tc)}
                 for tx,ty,tl,tc in self.threats
