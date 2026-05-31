@@ -25,8 +25,8 @@ BREADCRUMB_INTERVAL = 0.10
 EXPLORATION_TIMEOUT = 180
 OBSTACLE_THRESHOLD = 0.25
 MOTOR_BASE_SPEED = 55     # your low-speed cruise (45 stalled; ~55 reliable)
-MOTOR_SLOW_SPEED = 38     # reduced speed in obstacle warning zone (> stall ~45 less turn)
-MOTOR_TURN_SPEED = 40
+MOTOR_SLOW_SPEED = 46     # reduced speed in obstacle warning zone (just above stall)
+MOTOR_TURN_SPEED = 65     # in-place pivot — needs more torque than forward; was 40 = stall
 MOTOR_STOP = 0
 
 # --- Recon / obstacle avoidance ---
@@ -36,9 +36,9 @@ TOF_WARN_DISTANCE     = 0.45   # ToF slow-down zone (m): car decelerates between
 RETURN_TOF_STOP       = 0.20   # ToF obstacle threshold during return
 SWEEP_SETTLE_S        = 0.7    # wait after each servo/pivot step before reading (longer = camera stabilises)
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
-PIVOT_STEP_TIMEOUT    = 3.0    # s, safety cap per pivot step (longer at low turn speed)
-BACKUP_TIME           = 1.2    # s reverse (slow) on dead end / stuck
-MOTOR_REVERSE_SPEED   = 55     # reverse speed (must clear stall threshold ~45)
+PIVOT_STEP_TIMEOUT    = 4.0    # s, safety cap per pivot step
+BACKUP_TIME           = 1.8    # s reverse on dead end / stuck (longer = more clearance gained)
+MOTOR_REVERSE_SPEED   = 65     # reverse speed (needs more than stall ~45, more than forward)
 STUCK_TIMEOUT         = 5.0    # s without meaningful movement -> force reverse+reroute
 STUCK_MOVE_THRESHOLD  = 0.04   # m — below this over STUCK_TIMEOUT = stuck
 STUCK_REVERSE_TIME    = 1.5    # s reverse when stuck is detected (longer = more clearance)

@@ -140,9 +140,10 @@ def control_loop():
                 fs.tof_distance if fs.valid else 0.0,
                 fs.us_distance  if fs.valid else 0.0,
                 px, py, pth, confirmed,
-                cam_blocked     = path_vision.path_blocked,
-                cam_left_score  = path_vision.left_score,
-                cam_right_score = path_vision.right_score)
+                cam_blocked      = path_vision.path_blocked,
+                cam_left_score   = path_vision.left_score,
+                cam_right_score  = path_vision.right_score,
+                cam_center_score = path_vision.center_score)
         sensor_reader.send_command(left, right)
 
         # ── indicator LED / buzzer ──
@@ -229,12 +230,10 @@ def action():
             vo.x = vo.y = vo.theta = 0.0
             vo.prev_kp = vo.prev_des = None
             nav.start_exploration()
-            sensor_reader.play_tune(1)   # happy birthday
         elif act == "return":
             nav.start_return(dead_reck.breadcrumbs)
         elif act == "stop":
             nav.stop()
-            sensor_reader.play_tune(2)   # fade-out beeps
     # always send a stop command immediately so MCU doesn't coast
     sensor_reader.send_command(0, 0)
     return jsonify({"ok":True, "state":nav.state_name})

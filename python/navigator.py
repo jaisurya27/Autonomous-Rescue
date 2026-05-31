@@ -87,6 +87,7 @@ class Navigator:
         self._rtheta           = 0.0
         self._cam_left_score   = 0.5
         self._cam_right_score  = 0.5
+        self._cam_center_score = 0.5
 
         # return
         self._return_path          = []
@@ -154,12 +155,14 @@ class Navigator:
     # ── main entry ───────────────────────────────────────────────────────────
 
     def compute_command(self, tof, us, rx, ry, rtheta, detections,
-                        cam_blocked=False, cam_left_score=0.5, cam_right_score=0.5):
+                        cam_blocked=False, cam_left_score=0.5, cam_right_score=0.5,
+                        cam_center_score=0.5):
         # store for use in _check_stuck which doesn't receive rtheta directly
         self._rtheta = rtheta
         # store camera scores so sweep can use them when reading servo positions
-        self._cam_left_score  = cam_left_score
-        self._cam_right_score = cam_right_score
+        self._cam_left_score   = cam_left_score
+        self._cam_right_score  = cam_right_score
+        self._cam_center_score = cam_center_score
 
         if self.state in (NavState.IDLE, NavState.ARRIVED):
             self.motion = "stop"
@@ -412,12 +415,23 @@ class Navigator:
 
         # ── C: record sample at current car+servo position ──
         servo_pos = SERVO_SWEEP_POS[self._servo_step]
-        # Apply SERVO_BEARING_SIGN so heading sign matches actual head orientation.
         servo_offset_rad = math.radians((servo_pos - SERVO_CENTER) * SERVO_BEARING_SIGN)
         world_h = _wrap(rtheta + servo_offset_rad)
-        # ToF is physically on the servo head — it reads in the pan direction at all positions.
-        # Use it for every sample; camera variance scores were unreliable for heading selection.
-        score = self._front_clearance(tof, us)
+
+        # Combined score: ToF distance + camera visual clarity.
+        # ToF is on the servo head so it reads the pan direction.
+        # Camera centre strip (after settle) shows what the head is pointing at;
+        # cam_center_score=1 means open floor visible, 0 means wall in shot.
+        # If ToF is clearly blocked (< stop distance) camera can't save it.
+        # If ToF is open or out-of-range, camera breaks ties and catches cases
+        # where the sensor beam misses a wall the camera can plainly see.
+        tof_raw = self._front_clearance(tof, us)
+        if tof_raw < TOF_STOP_DISTANCE:
+            score = tof_raw          # hard-blocked: low score regardless of camera
+        else:
+            # ToF says passable; add camera clarity bonus (0–2.0)
+            score = min(tof_raw, 3.0) + self._cam_center_score * 2.0
+
         self._sweep_samples.append((world_h, score))
 
         self._servo_step += 1
@@ -458,10 +472,11 @@ class Navigator:
         if not candidates:
             candidates = self._sweep_samples  # nothing excluded, use all
 
-        # Only commit to a heading that actually has room to drive into.
-        # TOF_STOP_DISTANCE * 1.5 ensures we don't pick a reading that will
-        # immediately re-trigger a stop on the first advance step.
-        driveable = [(h, c) for h, c in candidates if c > TOF_STOP_DISTANCE * 1.5]
+        # Only commit to a heading that is genuinely driveable.
+        # Score > 0.35 means the raw ToF was >= TOF_STOP_DISTANCE (0.20m).
+        # Headings at exactly the stop boundary score 0.20; we want a margin.
+        # Combined score ≥ 0.35 means ToF was ≥ 0.20 and camera was at least neutral.
+        driveable = [(h, c) for h, c in candidates if c > TOF_STOP_DISTANCE + 0.15]
         if driveable:
             best_h, best_c = max(driveable, key=lambda s: s[1])
             self._commit_target = best_h

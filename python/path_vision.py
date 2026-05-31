@@ -29,6 +29,7 @@ class PathVision:
         self._path_blocked = False
         self._left_score   = 0.0
         self._right_score  = 0.0
+        self._center_score = 0.5  # 1.0 = open, 0.0 = wall visible in camera centre
 
     def update(self, frame):
         """Analyse a BGR frame. Call each control loop iteration when a
@@ -52,10 +53,13 @@ class PathVision:
             var_r = float(np.var(strip_right))
 
             self._path_blocked = var_c > CAM_OBSTACLE_VARIANCE
-            # higher variance = more texture = more likely an obstacle → LOWER score
-            # invert so higher score = more open
+            # 1/(1+var) left/right scores kept for backward compat (cruise soft signals)
             self._left_score  = 1.0 / (1.0 + var_l)
             self._right_score = 1.0 / (1.0 + var_r)
+            # Linear 0-1 score relative to the obstacle variance threshold.
+            # 0 = clearly a wall in shot, 1 = smooth open floor/space.
+            # Used by sweep to rank directions the servo is pointing at.
+            self._center_score = max(0.0, 1.0 - var_c / CAM_OBSTACLE_VARIANCE)
         except Exception:
             pass
 
@@ -63,6 +67,11 @@ class PathVision:
     def path_blocked(self):
         """True if the centre camera strip looks like an obstacle."""
         return self._path_blocked
+
+    @property
+    def center_score(self):
+        """0.0=wall visible in centre, 1.0=open floor/space. Linear relative to CAM_OBSTACLE_VARIANCE."""
+        return self._center_score
 
     @property
     def left_score(self):
