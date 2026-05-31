@@ -36,19 +36,17 @@ MOTOR_APPROACH_SPEED = 35
 
 # Car rotation steps during sweep (degrees from heading at sweep start).
 CAR_SWEEP_OFFSETS = [0, 90, -90]   # CENTER first, then LEFT 90, RIGHT 90
-# Scanning at the current heading first means greedy-commit can fire in < 1 settle
-# period if a clear direction is found at ±30° or ±60°. Only if the full forward
-# arc is blocked do we rotate the car body for the wider ±90° sweep.
+# Scanning at current heading first → greedy can fire in < 1 settle period.
+# Only if the ±60° servo arc is all blocked does the car body rotate.
 
-# Servo pan order during each car position.
-# ±30° positions are checked FIRST so that a small obstacle (box, debris) gets
-# a shallow bypass angle committed immediately via greedy-commit, without ever
-# needing the car to rotate.  ±60° and centre are checked after as fallback.
-SERVO_SWEEP_POS = [120, 60, SERVO_LEFT, SERVO_RIGHT, SERVO_CENTER]
-#  with SERVO_BEARING_SIGN = -1.0 these map to world offsets:
-#  120 → -30° (right 30°),  60 → +30° (left 30°),
-#  150 → -60° (right 60°),  30 → +60° (left 60°),
-#   90 →   0° (straight, usually blocked when sweeping)
+# Three servo positions per car orientation: right 60°, straight, left 60°.
+# ToF is on the servo head so each reading gives a direct distance in that direction.
+# Greedy commit fires as soon as any position reads clear — no camera score needed.
+SERVO_SWEEP_POS = [SERVO_LEFT, SERVO_CENTER, SERVO_RIGHT]
+# with SERVO_BEARING_SIGN = -1.0:
+#   SERVO_LEFT (150) → world -60° (right 60°)
+#   SERVO_CENTER (90) → world  0° (straight)
+#   SERVO_RIGHT (30) → world +60° (left 60°)
 
 class NavState(Enum):
     IDLE="idle"; EXPLORE="explore"; APPROACH="approach"; RETURN="return"; ARRIVED="arrived"
@@ -481,20 +479,11 @@ class Navigator:
         servo_offset_rad = math.radians((servo_pos - SERVO_CENTER) * SERVO_BEARING_SIGN)
         world_h = _wrap(rtheta + servo_offset_rad)
 
-        # Combined score: ToF distance + camera visual clarity.
-        # ToF is on the servo head so it reads the pan direction.
-        # Camera centre strip (after settle) shows what the head is pointing at;
-        # cam_center_score=1 means open floor visible, 0 means wall in shot.
-        # If ToF is clearly blocked (< stop distance) camera can't save it.
-        # If ToF is open or out-of-range, camera breaks ties and catches cases
-        # where the sensor beam misses a wall the camera can plainly see.
-        tof_raw = self._front_clearance(tof, us)
-        if tof_raw < TOF_STOP_DISTANCE:
-            score = tof_raw          # hard-blocked: low score regardless of camera
-        else:
-            # ToF says passable; add camera clarity bonus (0–2.0)
-            score = min(tof_raw, 3.0) + self._cam_center_score * 2.0
-
+        # Score = ToF distance in this pan direction.
+        # ToF is physically on the servo head so it measures exactly what the
+        # servo is pointing at.  0 reading = out-of-range (OOR) → treated as 99 m.
+        # Camera is used for person detection only, not for route decisions.
+        score = self._front_clearance(tof, us)   # 0.01–2 m or 99 if OOR
         self._sweep_samples.append((world_h, score))
 
         # ── Greedy commit: act immediately on the first clearly-open direction ──
@@ -557,11 +546,10 @@ class Navigator:
             if not candidates:
                 candidates = self._sweep_samples
 
-        # Only commit to a heading that is genuinely driveable.
-        # Score > 0.35 means the raw ToF was >= TOF_STOP_DISTANCE (0.20m).
-        # Headings at exactly the stop boundary score 0.20; we want a margin.
-        # Combined score ≥ 0.35 means ToF was ≥ 0.20 and camera was at least neutral.
-        driveable = [(h, c) for h, c in candidates if c > TOF_STOP_DISTANCE + 0.15]
+        # Score is ToF distance. Only consider headings with genuine clearance.
+        # TOF_STOP_DISTANCE * 1.5 = 30 cm minimum — avoids committing to a direction
+        # that will immediately re-trigger a stop on the first advance step.
+        driveable = [(h, c) for h, c in candidates if c > TOF_STOP_DISTANCE * 1.5]
         if driveable:
             best_h, best_c = max(driveable, key=lambda s: s[1])
             self._commit_target = best_h
