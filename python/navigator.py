@@ -245,13 +245,9 @@ class Navigator:
         return -MOTOR_REVERSE_SPEED, -MOTOR_REVERSE_SPEED
 
     def _is_blocked(self, tof, us=None):
-        """Use the cached forward ToF reading (_tof_forward), not the current panned
-        reading. This prevents the servo cruise scan from triggering false-positive
-        obstacle stops every time it sweeps past a side wall.
-        US (body-fixed) adds a forward guard as a secondary check."""
-        fwd_blocked = 0.01 < self._tof_forward < TOF_STOP_DISTANCE
-        us_blocked  = us is not None and 0.01 < us < US_STOP_DISTANCE
-        return fwd_blocked or us_blocked
+        """Use the cached forward ToF reading so panned servo readings don't
+        cause false stops during cruise scan."""
+        return 0.01 < self._tof_forward < TOF_STOP_DISTANCE
 
     def _front_clearance(self, tof, us=None):
         """Clearance in the servo's CURRENT pan direction (for sweep scoring)."""
@@ -488,38 +484,52 @@ class Navigator:
             self._finish_sweep(rtheta, now)
             return MOTOR_STOP, MOTOR_STOP
 
-        # ── A: rotate car to target heading (only at start of each car step) ──
+        # ── helpers shared by A and B ──────────────────────────────────────────
+        def _fwd_clear():
+            """Forward clearance, treating ToF=0 (out-of-range) as 99 m."""
+            return self._tof_forward if self._tof_forward > 0.01 else 99.0
+
+        def _try_opportunistic(heading):
+            """Commit to `heading` immediately if it is clear and not backward."""
+            back_h   = _wrap(self._sweep_start_h + math.pi)
+            not_back = abs(_ang_diff(heading, back_h)) > math.radians(30)
+            if not_back and _fwd_clear() >= GREEDY_COMMIT_SCORE:
+                print(f"[nav] opportunistic → {math.degrees(heading):.0f}° "
+                      f"(tof_fwd={_fwd_clear():.2f}m)")
+                self._commit_target = heading
+                self._phase_t       = now
+                self._phase         = "commit"
+                self._sweep_samples = []
+                self.motion         = "stop"
+                return True
+            return False
+
+        # ── A: rotate car to target heading ────────────────────────────────
         if self._servo_step == 0 and self._settle_t is None:
-            err = _ang_diff(self._sweep_target_h, rtheta)
+            err      = _ang_diff(self._sweep_target_h, rtheta)
             timed_out = (now - self._step_start_t) > PIVOT_STEP_TIMEOUT
 
-            # Opportunistic commit during pivot:
-            # While rotating, _tof_forward reflects whatever heading the car
-            # currently faces (servo is at centre). If that heading is already
-            # clear, commit immediately — no need to finish the rotation.
-            if abs(err) > HEADING_TOLERANCE:   # still rotating
-                back_h    = _wrap(self._sweep_start_h + math.pi)
-                not_back  = abs(_ang_diff(rtheta, back_h)) > math.radians(30)
-                if not_back and self._tof_forward >= GREEDY_COMMIT_SCORE:
-                    print(f"[nav] opportunistic commit during pivot "
-                          f"→ {math.degrees(rtheta):.0f}° (tof={self._tof_forward:.2f}m)")
-                    self._commit_target = rtheta
-                    self._phase_t       = now
-                    self._phase         = "commit"
-                    self._sweep_samples = []
-                    self.motion         = "stop"
+            # While rotating, servo is at centre → _tof_forward reads the current
+            # heading. If it's clear, stop rotating and commit NOW.
+            if abs(err) > HEADING_TOLERANCE:
+                if _try_opportunistic(rtheta):
                     return MOTOR_STOP, MOTOR_STOP
 
             if abs(err) > HEADING_TOLERANCE and not timed_out:
                 return self._pivot(+1 if err > 0 else -1)
-            # car reached angle — move servo to first position and start settle
+            # car reached target — move servo to first pan position and settle
             self._set_servo(SERVO_SWEEP_POS[0])
             self._settle_t = now
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        # ── B: settle (servo moved or car just stopped) ──
+        # ── B: settle after servo moved ─────────────────────────────────────
         if self._settle_t is not None and (now - self._settle_t) < SWEEP_SETTLE_S:
+            # Don't wait idle: if forward is already clearly open, commit now.
+            # Servo may not be fully settled yet but ToF=0 (OOR) is unambiguous.
+            if self._tof_forward == 0.0:   # OOR = definitely nothing ahead
+                if _try_opportunistic(rtheta):
+                    return MOTOR_STOP, MOTOR_STOP
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
