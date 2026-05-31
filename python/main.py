@@ -15,6 +15,7 @@ from occupancy_grid import OccupancyGrid
 from detector import Detector
 from navigator import Navigator, NavState
 from visual_odometry import VisualOdometry
+from path_vision import PathVision
 
 class _NpEnc(_json.JSONEncoder):
     def default(self, o):
@@ -29,6 +30,7 @@ occ_grid = OccupancyGrid()
 detector = Detector()
 nav = Navigator(sensors=sensor_reader)        # navigator can pan the servo
 vo = VisualOdometry(CAMERA_FOCAL_LENGTH, CAMERA_WIDTH//2, CAMERA_HEIGHT//2)
+path_vision = PathVision()
 
 camera = None; camera_lock = threading.Lock()
 latest_frame = None; frame_lock = threading.Lock()
@@ -115,6 +117,7 @@ def control_loop():
         # VO still runs for the camera overlay + person distance estimate only.
         if img is not None:
             vo.process_frame(img, imu_gz=fs.gy if fs.valid else 0.0, dt=dt)
+            path_vision.update(img)
             dc += 1
             if dc % 5 == 0: detector.feed_frame(img)
 
@@ -135,7 +138,8 @@ def control_loop():
             left, right = nav.compute_command(
                 fs.tof_distance if fs.valid else 0.0,
                 fs.us_distance  if fs.valid else 0.0,
-                px, py, pth, confirmed)
+                px, py, pth, confirmed,
+                cam_blocked=path_vision.path_blocked)
         sensor_reader.send_command(left, right)
 
         # ── indicator LED / buzzer ──
@@ -184,7 +188,7 @@ def get_persons():
 def camera_frame():
     with frame_lock: f = latest_frame
     if f is not None:
-        d = f.copy()
+        d = path_vision.annotate(f)     # draws CLEAR/BLOCKED region on bottom strip
         cv2.putText(d,f"VO:{vo.matches_count}m {vo.inliers_count}in",(5,15),0,0.35,(0,255,0),1)
         cv2.putText(d,f"({vo.x:.2f},{vo.y:.2f}) {vo.get_heading_deg():.0f}deg",(5,30),0,0.35,(0,255,0),1)
         for det in detector.get_detections():

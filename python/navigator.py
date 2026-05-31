@@ -31,6 +31,7 @@ from config import (MOTOR_BASE_SPEED, MOTOR_TURN_SPEED, MOTOR_STOP,
                     US_STOP_DISTANCE, TOF_STOP_DISTANCE,
                     SWEEP_SETTLE_S, MIN_CLEARANCE, PIVOT_STEP_TIMEOUT,
                     BACKUP_TIME, EXPLORATION_TIMEOUT,
+                    STUCK_TIMEOUT, STUCK_MOVE_THRESHOLD, STUCK_REVERSE_TIME,
                     SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT, SERVO_SWEEP_ANGLES,
                     PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
 
@@ -70,6 +71,11 @@ class Navigator:
         self._commit_target = None
         # APPROACH state
         self._approach_logged = False
+        # stuck detection
+        self._stuck_ref_pos = (0.0, 0.0)
+        self._stuck_ref_t   = time.time()
+        self._stuck_reversing = False
+        self._stuck_rev_until = 0.0
 
     # ── transitions ──────────────────────────────────────────────────────────
 
@@ -96,6 +102,10 @@ class Navigator:
         self._settle_t = None
         self._commit_target = None
         self._approach_logged = False
+        self._stuck_ref_pos   = (0.0, 0.0)
+        self._stuck_ref_t     = time.time()
+        self._stuck_reversing = False
+        self._stuck_rev_until = 0.0
         self.motion = "stop"
         self._set_servo(SERVO_CENTER)
 
@@ -115,8 +125,9 @@ class Navigator:
 
     # ── main entry ───────────────────────────────────────────────────────────
 
-    def compute_command(self, tof, us, rx, ry, rtheta, detections):
+    def compute_command(self, tof, us, rx, ry, rtheta, detections, cam_blocked=False):
         """detections: list of confirmed Detection objects (may be empty).
+        cam_blocked: soft signal from PathVision — camera sees an obstacle ahead.
         Returns (left_speed, right_speed)."""
 
         if self.state in (NavState.IDLE, NavState.ARRIVED):
@@ -128,6 +139,12 @@ class Navigator:
             self._reset_recon()
             return MOTOR_STOP, MOTOR_STOP
 
+        # Stuck check — overrides everything except IDLE/RETURN
+        if self.state not in (NavState.IDLE, NavState.ARRIVED, NavState.RETURN):
+            stuck_cmd = self._check_stuck(rx, ry, rtheta)
+            if stuck_cmd is not None:
+                return stuck_cmd
+
         if self.state == NavState.RETURN:
             return self._return_drive(rx, ry, rtheta)
 
@@ -135,7 +152,7 @@ class Navigator:
             return self._approach_drive(tof, us, detections, rx, ry, rtheta)
 
         # EXPLORE
-        return self._explore_drive(tof, us, rtheta, detections)
+        return self._explore_drive(tof, us, rtheta, detections, cam_blocked)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -152,9 +169,63 @@ class Navigator:
         return ((-MOTOR_TURN_SPEED, MOTOR_TURN_SPEED) if direction > 0
                 else (MOTOR_TURN_SPEED, -MOTOR_TURN_SPEED))
 
-    def _is_blocked(self, tof, us):
-        return ((us > 0.01 and us < US_STOP_DISTANCE) or
-                (abs(self.servo_angle - SERVO_CENTER) < 5 and 0.01 < tof < TOF_STOP_DISTANCE))
+    def _is_blocked(self, tof, us, cam_blocked=False):
+        """US is the hard stop. ToF (when centered) is a secondary hard stop.
+        cam_blocked from PathVision is a SOFT signal — only triggers a sweep
+        when BOTH camera AND at least one distance sensor agree."""
+        us_hard  = (us > 0.01 and us < US_STOP_DISTANCE)
+        tof_hard = (abs(self.servo_angle - SERVO_CENTER) < 5 and 0.01 < tof < TOF_STOP_DISTANCE)
+        # Camera alone won't stop the car. Camera + close reading = blocked.
+        cam_soft = cam_blocked and (
+            (us > 0.01 and us < US_STOP_DISTANCE * 2.5) or
+            (abs(self.servo_angle - SERVO_CENTER) < 5 and 0.01 < tof < TOF_STOP_DISTANCE * 1.5)
+        )
+        return us_hard or tof_hard or cam_soft
+
+    def _check_stuck(self, rx, ry, rtheta):
+        """If the robot hasn't moved STUCK_MOVE_THRESHOLD in STUCK_TIMEOUT seconds,
+        reverse briefly then trigger a new sweep. Returns a motor command if
+        stuck action is in progress, None otherwise."""
+        now = time.time()
+
+        # while reversing, keep reversing until the timer expires
+        if self._stuck_reversing:
+            if now < self._stuck_rev_until:
+                self.motion = "stop"
+                return -MOTOR_BASE_SPEED, -MOTOR_BASE_SPEED
+            # reverse done → reset to cruise phase and do a fresh sweep
+            self._stuck_reversing = False
+            self.state = NavState.EXPLORE
+            self._phase = "cruise"
+            # reset stuck reference from new position
+            self._stuck_ref_pos = (rx, ry)
+            self._stuck_ref_t   = now
+            return None
+
+        # only check when actually trying to drive forward
+        if self.motion != "forward":
+            self._stuck_ref_pos = (rx, ry)
+            self._stuck_ref_t   = now
+            return None
+
+        dist_moved = math.hypot(rx - self._stuck_ref_pos[0], ry - self._stuck_ref_pos[1])
+        if dist_moved >= STUCK_MOVE_THRESHOLD:
+            # made meaningful progress — update reference
+            self._stuck_ref_pos = (rx, ry)
+            self._stuck_ref_t   = now
+            return None
+
+        if (now - self._stuck_ref_t) > STUCK_TIMEOUT:
+            # stuck — reverse and reroute
+            print("[nav] stuck detected — reversing")
+            self._stuck_reversing = True
+            self._stuck_rev_until = now + STUCK_REVERSE_TIME
+            self._stuck_ref_pos   = (rx, ry)
+            self._stuck_ref_t     = now
+            self.motion = "stop"
+            return -MOTOR_BASE_SPEED, -MOTOR_BASE_SPEED
+
+        return None
 
     # ── APPROACH: come closer to a detected person ────────────────────────────
 
@@ -197,7 +268,7 @@ class Navigator:
 
     # ── EXPLORE ───────────────────────────────────────────────────────────────
 
-    def _explore_drive(self, tof, us, rtheta, detections):
+    def _explore_drive(self, tof, us, rtheta, detections, cam_blocked=False):
         now = time.time()
 
         # ── CRUISE ──
@@ -210,7 +281,7 @@ class Navigator:
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
 
-            if self._is_blocked(tof, us):
+            if self._is_blocked(tof, us, cam_blocked):
                 self._start_sweep(rtheta, now)
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
@@ -248,7 +319,7 @@ class Navigator:
                 self._set_servo(SERVO_CENTER)
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
-            if self._is_blocked(tof, us):
+            if self._is_blocked(tof, us, cam_blocked):
                 self._phase = "cruise"
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP

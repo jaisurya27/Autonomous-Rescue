@@ -29,12 +29,18 @@ MOTOR_TURN_SPEED = 75
 MOTOR_STOP = 0
 
 # --- Recon / obstacle avoidance ---
-US_STOP_DISTANCE      = 0.05   # front ultrasonic hard stop (m) [5 cm]
+US_STOP_DISTANCE      = 0.15   # front ultrasonic hard stop (m) [15 cm]
 TOF_STOP_DISTANCE     = 0.25   # head ToF stop when centered (m)
 SWEEP_SETTLE_S        = 0.35   # wait after each servo/pivot step before reading
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
 PIVOT_STEP_TIMEOUT    = 1.4    # s, safety cap per pivot step
 BACKUP_TIME           = 0.6    # s reverse when in a dead end
+STUCK_TIMEOUT         = 5.0    # s without meaningful movement -> force reverse+reroute
+STUCK_MOVE_THRESHOLD  = 0.04   # m — below this over STUCK_TIMEOUT = stuck
+STUCK_REVERSE_TIME    = 0.8    # s reverse when stuck is detected
+# Camera path vision: analyse bottom-center strip of frame for obstacles.
+# Variance above this in the look-ahead strip = textured obstacle ahead.
+CAM_OBSTACLE_VARIANCE = 400    # tune up if false positives on textured floors
 # Person approach
 PERSON_APPROACH_DIST  = 0.30   # stop this close to a detected person (m)
 PERSON_BBOX_CLOSE_PX  = 180    # bbox height in px = "close enough" (fallback)
