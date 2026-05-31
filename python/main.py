@@ -242,6 +242,32 @@ def action():
     sensor_reader.send_command(0, 0)
     return jsonify({"ok":True, "state":nav.state_name})
 
+@app.route("/api/manual", methods=["POST"])
+def manual_toggle():
+    """Enter/leave manual RC mode. Entering stops autonomy; leaving goes to IDLE.
+    Rendering, mapping, and detection keep running in either mode."""
+    on = bool(request.get_json().get("on", False))
+    with nav_lock:
+        if on:
+            nav.start_manual()
+        else:
+            nav.stop()
+    sensor_reader.send_command(0, 0)
+    return jsonify({"ok":True, "state":nav.state_name, "manual":nav.state_name=="manual"})
+
+@app.route("/api/manual_cmd", methods=["POST"])
+def manual_cmd():
+    """Drive/head commands while in manual mode. Ignored if not manual."""
+    j = request.get_json()
+    with nav_lock:
+        if nav.state_name != "manual":
+            return jsonify({"ok":False, "reason":"not in manual mode"})
+        if "drive" in j:
+            nav.set_manual_drive(j["drive"])     # forward/back/left/right/stop
+        if "head" in j:
+            nav.manual_head(j["head"])           # left/right/center
+    return jsonify({"ok":True})
+
 # App Lab runs this module; start everything at import.
 print("="*50); print("  RECON ROVER — merged build"); print("="*50)
 init_camera(); sensor_reader.start(); detector.start()

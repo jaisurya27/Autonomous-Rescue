@@ -54,6 +54,18 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
 .decision-text{font-size:12px;color:var(--ac);margin-top:2px;font-weight:500}
 .decision-sub{font-size:10px;color:var(--tx2);margin-top:2px}
 .cam-blocked{color:var(--rd)}.cam-clear{color:var(--gn)}
+.btn.manual-on{background:var(--pu);border-color:var(--pu);color:#0a0e17;font-weight:600}
+.manual-panel{display:none;flex-direction:column;gap:10px;margin-bottom:8px;
+padding:10px;background:var(--sf2);border:1px solid var(--pu);border-radius:6px}
+.manual-panel.show{display:flex}
+.pad-label{font-size:9px;color:var(--tx2);text-transform:uppercase;letter-spacing:1px;text-align:center}
+.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;justify-items:center}
+.pad .pbtn{width:100%;padding:10px 0;border:1px solid var(--bd);border-radius:5px;background:var(--bg);
+color:var(--tx);font-family:inherit;font-size:16px;cursor:pointer;user-select:none;touch-action:none}
+.pad .pbtn:active,.pad .pbtn.held{background:var(--pu);color:#0a0e17;border-color:var(--pu)}
+.pad .pbtn.spacer{visibility:hidden;cursor:default}
+.head-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+.head-pad .pbtn{padding:10px 0;font-size:13px}
 </style>
 </head>
 <body>
@@ -86,6 +98,30 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
     <button class="btn" onclick="doAction('return')">Return</button>
     <button class="btn" onclick="doAction('stop')">Stop</button>
   </div>
+  <div class="ctrls">
+    <button class="btn" id="manualBtn" onclick="toggleManual()">Start Manual Control</button>
+  </div>
+  <div class="manual-panel" id="manualPanel">
+    <div>
+      <div class="pad-label">Movement</div>
+      <div class="pad">
+        <button class="pbtn spacer">·</button>
+        <button class="pbtn" data-drive="forward">↑</button>
+        <button class="pbtn spacer">·</button>
+        <button class="pbtn" data-drive="left">←</button>
+        <button class="pbtn" data-drive="back">↓</button>
+        <button class="pbtn" data-drive="right">→</button>
+      </div>
+    </div>
+    <div>
+      <div class="pad-label">Head / Gyro</div>
+      <div class="head-pad">
+        <button class="pbtn" data-head="left">⟲ Left</button>
+        <button class="pbtn" data-head="center">Center</button>
+        <button class="pbtn" data-head="right">Right ⟳</button>
+      </div>
+    </div>
+  </div>
   <h2>Decision</h2>
   <div class="decision-box">
     <div class="decision-label">Current action</div>
@@ -98,7 +134,7 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
     <div class="m"><div class="ml">Speed</div><div class="mv" id="sS">0</div></div>
     <div class="m"><div class="ml">Traveled</div><div class="mv" id="sD">0m</div></div>
     <div class="m"><div class="ml">To start</div><div class="mv" id="sR">0m</div></div>
-    <div class="m"><div class="ml">US</div><div class="mv" id="sU">—</div></div>
+    <div class="m"><div class="ml">Head</div><div class="mv" id="sU">—</div></div>
     <div class="m"><div class="ml">ToF</div><div class="mv" id="sTof">—</div></div>
     <div class="m"><div class="ml">Threats</div><div class="mv" id="sT">0</div></div>
     <div class="m"><div class="ml">FPS</div><div class="mv" id="sF">0</div></div>
@@ -326,7 +362,7 @@ async function pollStatus() {
     // decision feed
     document.getElementById('dDecision').textContent = s.decision || '—';
     const camTxt  = s.cam_blocked ? 'Camera: BLOCKED' : 'Camera: clear';
-    const usTxt   = 'US: ' + (s.us ?? '—') + 'cm  ToF: ' + (s.tof ?? '—') + 'cm';
+    const usTxt   = 'Head: ' + (s.head_angle ?? '—') + '°  ToF: ' + (s.tof ?? '—') + 'cm';
     const swTxt   = s.sweep_attempts > 0 ? '  Sweeps: ' + s.sweep_attempts : '';
     const poseTxt = '  pos:(' + (s.pose_x ?? '?') + ',' + (s.pose_y ?? '?') + ')m  dist:' + (s.distance_to_start ?? '?') + 'm';
     document.getElementById('dSub').textContent = camTxt + '  |  ' + usTxt + swTxt + poseTxt;
@@ -336,7 +372,7 @@ async function pollStatus() {
     document.getElementById('sS').textContent = s.speed;
     document.getElementById('sD').textContent = s.distance_traveled + 'm';
     document.getElementById('sR').textContent = s.distance_to_start + 'm';
-    document.getElementById('sU').textContent = s.us != null ? s.us + 'cm' : '—';
+    document.getElementById('sU').textContent = s.head_angle != null ? s.head_angle + '°' : '—';
     document.getElementById('sTof').textContent = s.tof != null ? s.tof + 'cm' : '—';
     document.getElementById('sT').textContent = s.detections;
     document.getElementById('sF').textContent = Math.round(s.fps);
@@ -376,6 +412,49 @@ async function doAction(a) {
   await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})});
   addLog('Action: '+a, 'nav');
 }
+
+// ── Manual RC control ──
+let manualOn = false;
+async function toggleManual() {
+  manualOn = !manualOn;
+  await fetch('/api/manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:manualOn})});
+  const btn = document.getElementById('manualBtn');
+  const panel = document.getElementById('manualPanel');
+  btn.textContent = manualOn ? 'Stop Manual Control' : 'Start Manual Control';
+  btn.classList.toggle('manual-on', manualOn);
+  panel.classList.toggle('show', manualOn);
+  addLog(manualOn ? 'Manual control ON — autonomy stopped' : 'Manual control OFF', 'nav');
+}
+async function manualCmd(body) {
+  if (!manualOn) return;
+  await fetch('/api/manual_cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+}
+// Movement pad: press-and-hold to drive, release to stop.
+document.querySelectorAll('.pad .pbtn[data-drive]').forEach(b => {
+  const dir = b.dataset.drive;
+  const press = e => { e.preventDefault(); b.classList.add('held'); manualCmd({drive:dir}); };
+  const release = e => { e.preventDefault(); b.classList.remove('held'); manualCmd({drive:'stop'}); };
+  b.addEventListener('mousedown', press);
+  b.addEventListener('mouseup', release);
+  b.addEventListener('mouseleave', release);
+  b.addEventListener('touchstart', press, {passive:false});
+  b.addEventListener('touchend', release, {passive:false});
+});
+// Head pad: discrete tap to pan the servo head.
+document.querySelectorAll('.head-pad .pbtn[data-head]').forEach(b => {
+  b.addEventListener('click', () => manualCmd({head:b.dataset.head}));
+});
+// Keyboard arrows also drive while manual is on (nice for live demo).
+const keyMap = {ArrowUp:'forward', ArrowDown:'back', ArrowLeft:'left', ArrowRight:'right'};
+const heldKeys = new Set();
+document.addEventListener('keydown', e => {
+  if (!manualOn || !keyMap[e.key] || heldKeys.has(e.key)) return;
+  heldKeys.add(e.key); e.preventDefault(); manualCmd({drive:keyMap[e.key]});
+});
+document.addEventListener('keyup', e => {
+  if (!keyMap[e.key]) return;
+  heldKeys.delete(e.key); manualCmd({drive:'stop'});
+});
 function addLog(msg, type) {
   const log = document.getElementById('log');
   const t = new Date().toLocaleTimeString();

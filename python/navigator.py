@@ -28,7 +28,8 @@ from config import (MOTOR_BASE_SPEED, MOTOR_SLOW_SPEED, MOTOR_TURN_SPEED, MOTOR_
                     SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT, SERVO_BEARING_SIGN,
                     CAR_SURVEY_OFFSETS, SERVO_SCAN_STEP_DEG, SERVO_SCAN_INTERVAL,
                     GREEDY_COMMIT_SCORE, CAMERA_CLEAR_THRESHOLD,
-                    PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
+                    PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX,
+                    MANUAL_DRIVE_SPEED, MANUAL_TURN_SPEED, MANUAL_HEAD_STEP)
 
 HEADING_TOLERANCE    = math.radians(15)
 MOTOR_APPROACH_SPEED = 35
@@ -49,6 +50,7 @@ SERVO_SWEEP_POS = [SERVO_LEFT, SERVO_CENTER, SERVO_RIGHT]
 
 class NavState(Enum):
     IDLE="idle"; EXPLORE="explore"; APPROACH="approach"; RETURN="return"; ARRIVED="arrived"
+    MANUAL="manual"
 
 def _ang_diff(a, b):
     return math.atan2(math.sin(a - b), math.cos(a - b))
@@ -123,6 +125,9 @@ class Navigator:
         self._return_dodge_dir     = 1
         self._return_advance_until = 0.0
 
+        # manual RC control (final-demo-feature)
+        self._manual_drive = "stop"   # forward / back / left / right / stop
+
     # ── public transitions ───────────────────────────────────────────────────
 
     def start_exploration(self):
@@ -146,6 +151,50 @@ class Navigator:
     def stop(self):
         self._reset()
         self.state = NavState.IDLE
+
+    # ── manual RC control (final-demo-feature) ────────────────────────────────
+
+    def start_manual(self):
+        """Switch to manual mode. Autonomy stops driving; the operator's
+        joypad commands drive the car directly. Pose/grid/detection/rendering
+        all keep running in the control loop regardless of state."""
+        self._reset()
+        self.state = NavState.MANUAL
+        self._manual_drive = "stop"
+        self._set_servo(SERVO_CENTER)
+
+    def set_manual_drive(self, cmd):
+        """Set the current manual movement: forward/back/left/right/stop."""
+        if cmd in ("forward", "back", "left", "right", "stop"):
+            self._manual_drive = cmd
+
+    def manual_head(self, direction):
+        """Pan the servo head in manual mode. direction: 'left'/'right'/'center'."""
+        if direction == "center":
+            self._set_servo(SERVO_CENTER)
+            return
+        step = MANUAL_HEAD_STEP if direction == "left" else -MANUAL_HEAD_STEP
+        new_angle = self.servo_angle + step
+        # Clamp to the servo's usable arc (SERVO_RIGHT..SERVO_LEFT).
+        lo, hi = min(SERVO_RIGHT, SERVO_LEFT), max(SERVO_RIGHT, SERVO_LEFT)
+        self._set_servo(max(lo, min(hi, new_angle)))
+
+    def _manual_drive_cmd(self):
+        """Translate the latched manual command into motor speeds."""
+        if self._manual_drive == "forward":
+            self.motion = "forward"
+            return MANUAL_DRIVE_SPEED, MANUAL_DRIVE_SPEED
+        if self._manual_drive == "back":
+            self.motion = "stop"
+            return -MANUAL_DRIVE_SPEED, -MANUAL_DRIVE_SPEED
+        if self._manual_drive == "left":
+            self.motion = "pivot"
+            return -MANUAL_TURN_SPEED, MANUAL_TURN_SPEED
+        if self._manual_drive == "right":
+            self.motion = "pivot"
+            return MANUAL_TURN_SPEED, -MANUAL_TURN_SPEED
+        self.motion = "stop"
+        return MOTOR_STOP, MOTOR_STOP
 
     def _reset(self):
         self._phase            = "cruise"
@@ -175,6 +224,7 @@ class Navigator:
         self._tof_forward          = 99.0
         self._cruise_best_h        = None
         self._cruise_best_score    = 0.0
+        self._manual_drive         = "stop"
         self.motion                = "stop"
         self._set_servo(SERVO_CENTER)
 
@@ -207,6 +257,11 @@ class Navigator:
         if self.state in (NavState.IDLE, NavState.ARRIVED):
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
+
+        # Manual RC: operator drives directly; no autonomy logic runs, but the
+        # caller (control loop) still updates pose/grid/detection/dashboard.
+        if self.state == NavState.MANUAL:
+            return self._manual_drive_cmd()
 
         if self.state == NavState.EXPLORE and self.exploration_elapsed > EXPLORATION_TIMEOUT:
             self.state = NavState.ARRIVED

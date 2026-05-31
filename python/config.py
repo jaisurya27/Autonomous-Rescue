@@ -24,10 +24,16 @@ TOF_MAX_RANGE = 2.0
 BREADCRUMB_INTERVAL = 0.10
 EXPLORATION_TIMEOUT = 3600  # 1 hour; was 180s which caused unexpected auto-stop
 OBSTACLE_THRESHOLD = 0.25
-MOTOR_BASE_SPEED = 55     # your low-speed cruise (45 stalled; ~55 reliable)
-MOTOR_SLOW_SPEED = 46     # reduced speed in obstacle warning zone (just above stall)
+MOTOR_BASE_SPEED = 48     # gentler cruise so the few-fps camera/CV keeps up (was 55;
+                          # 45 stalls on start, 48 still rolls reliably once moving)
+MOTOR_SLOW_SPEED = 44     # reduced speed in obstacle warning zone (just above stall)
 MOTOR_TURN_SPEED = 65     # in-place pivot — needs more torque than forward; was 40 = stall
 MOTOR_STOP = 0
+
+# Manual RC control (final-demo-feature). Speeds for the dashboard joypad.
+MANUAL_DRIVE_SPEED = 50    # forward/back when driving manually
+MANUAL_TURN_SPEED  = 60    # in-place left/right pivot when driving manually
+MANUAL_HEAD_STEP   = 20    # degrees the servo head moves per left/right tap
 
 # --- Recon / obstacle avoidance ---
 TOF_STOP_DISTANCE     = 0.20   # ToF hard stop (m). Sole obstacle sensor (US removed).
