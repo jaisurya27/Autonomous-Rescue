@@ -1,0 +1,70 @@
+"""sensors.py — Read sensors and send motor commands via the Arduino Bridge.
+
+Replaces the old HTTP-polling version. Same SensorFrame interface, so
+app.py / occupancy_grid / visual_odometry need no changes.
+"""
+
+import time, threading
+from dataclasses import dataclass
+from arduino.app_utils import Bridge
+from config import ACCEL_BIAS_X, ACCEL_BIAS_Y, GYRO_BIAS_Z
+
+@dataclass
+class SensorFrame:
+    timestamp: float = 0.0
+    ax: float = 0.0; ay: float = 0.0; az: float = 0.0
+    gx: float = 0.0; gy: float = 0.0; gz: float = 0.0
+    tof_distance: float = 0.0; us_distance: float = 0.0
+    temperature: float = 0.0; valid: bool = False
+
+class SensorReader:
+    def __init__(self):
+        self._latest = SensorFrame()
+        self._lock = threading.Lock()
+        self._running = False
+
+    def start(self):
+        self._running = True
+        threading.Thread(target=self._loop, daemon=True).start()
+        print("[sensors] Reading via Bridge.call('read_sensors')")
+
+    def stop(self):
+        self._running = False
+
+    def get_latest(self):
+        with self._lock:
+            return self._latest
+
+    def _loop(self):
+        fails = 0
+        while self._running:
+            try:
+                csv = Bridge.call("read_sensors")           # CSV string from STM32
+                p = [float(x) for x in csv.split(",")]
+                ax, ay, az, gx, gy, gz, tof_mm, us_cm, temp_c = p
+                f = SensorFrame(
+                    timestamp=time.time(),
+                    ax=ax - ACCEL_BIAS_X, ay=ay - ACCEL_BIAS_Y, az=az,
+                    gx=gx, gy=gy, gz=gz - GYRO_BIAS_Z,
+                    tof_distance=tof_mm / 1000.0,    # mm -> m
+                    us_distance=us_cm / 100.0,       # cm -> m
+                    temperature=temp_c, valid=True,
+                )
+                with self._lock:
+                    self._latest = f
+                fails = 0
+                time.sleep(0.02)                     # ~50 Hz
+            except Exception as e:
+                fails += 1
+                if fails == 1:
+                    print(f"[sensors] Bridge not ready: {e}")
+                elif fails % 200 == 0:
+                    print(f"[sensors] Waiting for bridge... ({fails})")
+                time.sleep(0.1)
+
+    def send_command(self, left, right):
+        """Send motor PWM to the STM32. Never crash the control loop."""
+        try:
+            Bridge.call("set_motors", int(left), int(right))
+        except Exception:
+            pass

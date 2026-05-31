@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recon Rover</title>
+<style>
+:root{--bg:#0a0e17;--sf:#121928;--sf2:#1a2235;--bd:#2a3650;--tx:#e2e8f0;--tx2:#8896b0;
+--ac:#38bdf8;--gn:#4ade80;--am:#fbbf24;--rd:#f87171;--pu:#a78bfa}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'SF Mono','Fira Code',monospace;background:var(--bg);color:var(--tx);overflow-x:hidden}
+.hdr{padding:10px 20px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center}
+.hdr h1{font-size:14px;font-weight:500;letter-spacing:2px;text-transform:uppercase;color:var(--ac)}
+.state{font-size:12px;padding:3px 10px;border-radius:12px;background:var(--sf2);border:1px solid var(--bd)}
+.state.explore{border-color:var(--gn);color:var(--gn)}
+.state.return{border-color:var(--am);color:var(--am)}
+.state.idle{color:var(--tx2)}
+.layout{display:grid;grid-template-columns:1fr 280px;height:calc(100vh - 42px)}
+.main-area{display:flex;flex-direction:column;overflow:hidden}
+.view-tabs{display:flex;gap:0;border-bottom:1px solid var(--bd);flex-shrink:0}
+.vtab{padding:8px 20px;font-size:11px;letter-spacing:1px;text-transform:uppercase;background:var(--sf);
+color:var(--tx2);border:none;cursor:pointer;font-family:inherit;border-right:1px solid var(--bd)}
+.vtab.active{background:var(--bg);color:var(--ac);border-bottom:2px solid var(--ac)}
+.view{flex:1;display:none;position:relative;overflow:hidden;background:var(--sf)}
+.view.active{display:flex;align-items:center;justify-content:center}
+#mapCanvas{image-rendering:pixelated;border:1px solid var(--bd)}
+#three-container{width:100%;height:100%}
+.legend{position:absolute;bottom:8px;left:8px;font-size:10px;color:var(--tx2);display:flex;gap:10px;
+background:rgba(10,14,23,.85);padding:5px 8px;border-radius:6px}
+.leg{display:flex;align-items:center;gap:3px}
+.dot{width:8px;height:8px;border-radius:50%}
+.sidebar{background:var(--sf);padding:14px;overflow-y:auto;font-size:12px;border-left:1px solid var(--bd)}
+.sidebar h2{font-size:10px;font-weight:500;letter-spacing:1.5px;text-transform:uppercase;color:var(--tx2);margin:12px 0 8px}
+.cam{width:100%;aspect-ratio:4/3;background:var(--bg);border:1px solid var(--bd);border-radius:6px;object-fit:contain}
+.ctrls{display:flex;gap:5px;margin-bottom:8px}
+.btn{flex:1;padding:7px;border:1px solid var(--bd);border-radius:5px;background:var(--sf2);color:var(--tx);
+font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;letter-spacing:1px}
+.btn:hover{background:var(--bd)}
+.mg{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.m{background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:8px}
+.ml{font-size:9px;color:var(--tx2);margin-bottom:2px}
+.mv{font-size:15px;font-weight:500}
+.log{background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px;font-size:9px;color:var(--tx2);max-height:150px;overflow-y:auto;line-height:1.6}
+.le.threat{color:var(--rd)}.le.nav{color:var(--gn)}
+</style>
+</head>
+<body>
+<div class="hdr"><h1>Recon Rover</h1><span class="state idle" id="stL">idle</span></div>
+<div class="layout">
+<div class="main-area">
+  <div class="view-tabs">
+    <button class="vtab active" onclick="switchView('2d')">2D Map</button>
+    <button class="vtab" onclick="switchView('3d')">3D Room</button>
+  </div>
+  <div id="v2d" class="view active">
+    <canvas id="mapCanvas" width="500" height="500"></canvas>
+    <div class="legend">
+      <div class="leg"><div class="dot" style="background:#fff"></div>Free</div>
+      <div class="leg"><div class="dot" style="background:#555"></div>Unknown</div>
+      <div class="leg"><div class="dot" style="background:#000"></div>Wall</div>
+      <div class="leg"><div class="dot" style="background:var(--ac)"></div>Rover</div>
+      <div class="leg"><div class="dot" style="background:var(--rd)"></div>Threat</div>
+      <div class="leg"><div class="dot" style="background:var(--gn)"></div>Path</div>
+    </div>
+  </div>
+  <div id="v3d" class="view"><div id="three-container"></div></div>
+</div>
+<div class="sidebar">
+  <h2>Camera</h2>
+  <img class="cam" id="camFeed" src="/api/camera" alt="feed">
+  <h2>Controls</h2>
+  <div class="ctrls">
+    <button class="btn" onclick="doAction('explore')">Explore</button>
+    <button class="btn" onclick="doAction('return')">Return</button>
+    <button class="btn" onclick="doAction('stop')">Stop</button>
+  </div>
+  <h2>Telemetry</h2>
+  <div class="mg">
+    <div class="m"><div class="ml">Heading</div><div class="mv" id="sH">0</div></div>
+    <div class="m"><div class="ml">Speed</div><div class="mv" id="sS">0</div></div>
+    <div class="m"><div class="ml">Traveled</div><div class="mv" id="sD">0m</div></div>
+    <div class="m"><div class="ml">To start</div><div class="mv" id="sR">0m</div></div>
+    <div class="m"><div class="ml">Threats</div><div class="mv" id="sT">0</div></div>
+    <div class="m"><div class="ml">FPS</div><div class="mv" id="sF">0</div></div>
+    <div class="m"><div class="ml">VO matches</div><div class="mv" id="sM">0</div></div>
+    <div class="m"><div class="ml">VO inliers</div><div class="mv" id="sI">0</div></div>
+  </div>
+  <h2>Event log</h2>
+  <div class="log" id="log"></div>
+</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ── View switching ──
+function switchView(v) {
+  document.querySelectorAll('.view').forEach(e => e.classList.remove('active'));
+  document.querySelectorAll('.vtab').forEach(e => e.classList.remove('active'));
+  document.getElementById('v'+v).classList.add('active');
+  event.currentTarget.classList.add('active');
+  if (v === '3d' && !scene3d) init3D();
+}
+
+// ══════════════════════════════════════════
+// 2D MAP
+// ══════════════════════════════════════════
+const cv = document.getElementById('mapCanvas');
+const ctx = cv.getContext('2d');
+const CS = 4; // cell size in pixels
+let lastTC = 0;
+let latestMapData = null;
+
+function drawMap(d) {
+  latestMapData = d;
+  const w = d.width, h = d.height;
+  cv.width = w * CS; cv.height = h * CS;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const v = d.cells[y][x];
+      ctx.fillStyle = `rgb(${v},${v},${v})`;
+      ctx.fillRect(x*CS, y*CS, CS, CS);
+    }
+  // Breadcrumb trail
+  if (d.breadcrumbs && d.breadcrumbs.length > 1) {
+    ctx.strokeStyle = '#4ade8066'; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.moveTo(d.breadcrumbs[0].x*CS+CS/2, d.breadcrumbs[0].y*CS+CS/2);
+    for (let i = 1; i < d.breadcrumbs.length; i++)
+      ctx.lineTo(d.breadcrumbs[i].x*CS+CS/2, d.breadcrumbs[i].y*CS+CS/2);
+    ctx.stroke();
+  }
+  // Threats
+  for (const t of d.threats) {
+    ctx.fillStyle = '#f87171'; ctx.beginPath();
+    ctx.arc(t.x*CS+CS/2, t.y*CS+CS/2, 6, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '9px monospace';
+    ctx.fillText(t.label, t.x*CS+10, t.y*CS+4);
+  }
+  // Robot
+  const rx = d.robot_x*CS+CS/2, ry = d.robot_y*CS+CS/2;
+  ctx.save(); ctx.translate(rx, ry); ctx.rotate(-d.robot_theta);
+  ctx.fillStyle = '#38bdf8'; ctx.beginPath();
+  ctx.moveTo(10,0); ctx.lineTo(-6,-5); ctx.lineTo(-6,5); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  // Start
+  if (d.breadcrumbs && d.breadcrumbs.length) {
+    const sx = d.breadcrumbs[0].x*CS+CS/2, sy = d.breadcrumbs[0].y*CS+CS/2;
+    ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 2;
+    ctx.strokeRect(sx-5, sy-5, 10, 10);
+    ctx.fillStyle = '#4ade80'; ctx.font = '9px monospace';
+    ctx.fillText('START', sx+8, sy+3);
+  }
+}
+
+// ══════════════════════════════════════════
+// 3D VIEW (Three.js)
+// ══════════════════════════════════════════
+let scene3d = null, camera3d, renderer3d, wallGroup, pathLine, robotMesh, threatMeshes = [];
+
+function init3D() {
+  const container = document.getElementById('three-container');
+  const W = container.clientWidth, H = container.clientHeight;
+
+  scene3d = new THREE.Scene();
+  scene3d.background = new THREE.Color(0x0a0e17);
+  scene3d.fog = new THREE.Fog(0x0a0e17, 20, 60);
+
+  camera3d = new THREE.PerspectiveCamera(55, W/H, 0.1, 100);
+  camera3d.position.set(0, 12, 8);
+  camera3d.lookAt(0, 0, 0);
+
+  renderer3d = new THREE.WebGLRenderer({ antialias: true });
+  renderer3d.setSize(W, H);
+  renderer3d.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  container.appendChild(renderer3d.domElement);
+
+  // Lights
+  scene3d.add(new THREE.AmbientLight(0x8896b0, 0.6));
+  const dl = new THREE.DirectionalLight(0xe2e8f0, 0.8);
+  dl.position.set(5, 10, 5); scene3d.add(dl);
+
+  // Floor grid
+  const grid = new THREE.GridHelper(20, 40, 0x2a3650, 0x1a2235);
+  scene3d.add(grid);
+
+  // Groups
+  wallGroup = new THREE.Group(); scene3d.add(wallGroup);
+
+  // Robot marker
+  const rGeo = new THREE.ConeGeometry(0.15, 0.4, 8);
+  rGeo.rotateX(Math.PI / 2);
+  robotMesh = new THREE.Mesh(rGeo, new THREE.MeshPhongMaterial({ color: 0x38bdf8, emissive: 0x185fa5 }));
+  robotMesh.position.y = 0.2;
+  scene3d.add(robotMesh);
+
+  // Path line
+  const pathGeo = new THREE.BufferGeometry();
+  const pathMat = new THREE.LineBasicMaterial({ color: 0x4ade80, linewidth: 2 });
+  pathLine = new THREE.Line(pathGeo, pathMat);
+  scene3d.add(pathLine);
+
+  // Mouse orbit
+  let drag = false, prevX = 0, prevY = 0, camAngle = 0, camPitch = 0.8, camDist = 14;
+  const el = renderer3d.domElement;
+  el.addEventListener('mousedown', e => { drag = true; prevX = e.clientX; prevY = e.clientY; });
+  el.addEventListener('mouseup', () => drag = false);
+  el.addEventListener('mouseleave', () => drag = false);
+  el.addEventListener('mousemove', e => {
+    if (!drag) return;
+    camAngle -= (e.clientX - prevX) * 0.01;
+    camPitch = Math.max(0.2, Math.min(1.5, camPitch - (e.clientY - prevY) * 0.01));
+    prevX = e.clientX; prevY = e.clientY;
+  });
+  el.addEventListener('wheel', e => { camDist = Math.max(3, Math.min(30, camDist + e.deltaY * 0.02)); });
+
+  function animate() {
+    requestAnimationFrame(animate);
+    camera3d.position.x = Math.sin(camAngle) * Math.cos(camPitch) * camDist;
+    camera3d.position.z = Math.cos(camAngle) * Math.cos(camPitch) * camDist;
+    camera3d.position.y = Math.sin(camPitch) * camDist;
+    camera3d.lookAt(0, 0, 0);
+    renderer3d.render(scene3d, camera3d);
+  }
+  animate();
+
+  window.addEventListener('resize', () => {
+    const w2 = container.clientWidth, h2 = container.clientHeight;
+    camera3d.aspect = w2/h2; camera3d.updateProjectionMatrix();
+    renderer3d.setSize(w2, h2);
+  });
+}
+
+function update3D(d) {
+  if (!scene3d || !d) return;
+  const res = d.resolution || 0.05;
+  const cx = d.x_min + d.width/2, cy = d.y_min + d.height/2;
+
+  // Rebuild walls
+  while (wallGroup.children.length) wallGroup.remove(wallGroup.children[0]);
+
+  const wallMat = new THREE.MeshPhongMaterial({ color: 0x2a3650, emissive: 0x121928 });
+  const freeMat = new THREE.MeshPhongMaterial({ color: 0x1a2235, emissive: 0x0a0e17 });
+  const wallH = 1.2;
+
+  for (let y = 0; y < d.height; y += 2) {
+    for (let x = 0; x < d.width; x += 2) {
+      const v = d.cells[y] && d.cells[y][x];
+      if (v === undefined) continue;
+      const wx = (x - d.width/2) * res;
+      const wz = (y - d.height/2) * res;
+
+      if (v < 60) {
+        // Wall cell — extrude upward
+        const geo = new THREE.BoxGeometry(res*2, wallH, res*2);
+        const m = new THREE.Mesh(geo, wallMat);
+        m.position.set(wx, wallH/2, wz);
+        wallGroup.add(m);
+      } else if (v > 180) {
+        // Free cell — flat floor tile
+        const geo = new THREE.BoxGeometry(res*2, 0.02, res*2);
+        const m = new THREE.Mesh(geo, freeMat);
+        m.position.set(wx, 0.01, wz);
+        wallGroup.add(m);
+      }
+    }
+  }
+
+  // Robot position
+  const rrx = (d.robot_x - d.width/2) * res;
+  const rrz = (d.robot_y - d.height/2) * res;
+  robotMesh.position.set(rrx, 0.25, rrz);
+  robotMesh.rotation.y = -d.robot_theta + Math.PI/2;
+
+  // Path
+  if (d.breadcrumbs && d.breadcrumbs.length > 1) {
+    const pts = d.breadcrumbs.map(b => new THREE.Vector3(
+      (b.x - d.width/2) * res, 0.05, (b.y - d.height/2) * res
+    ));
+    pathLine.geometry.dispose();
+    pathLine.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+  }
+
+  // Threats
+  threatMeshes.forEach(m => scene3d.remove(m));
+  threatMeshes = [];
+  const tGeo = new THREE.SphereGeometry(0.12, 8, 8);
+  const tMat = new THREE.MeshPhongMaterial({ color: 0xf87171, emissive: 0xa32d2d });
+  for (const t of d.threats) {
+    const m = new THREE.Mesh(tGeo, tMat);
+    m.position.set((t.x - d.width/2)*res, 0.8, (t.y - d.height/2)*res);
+    scene3d.add(m); threatMeshes.push(m);
+  }
+}
+
+// ══════════════════════════════════════════
+// POLLING
+// ══════════════════════════════════════════
+async function pollMap() {
+  try {
+    const r = await fetch('/api/map'); const d = await r.json();
+    drawMap(d);
+    update3D(d);
+  } catch(e) {}
+}
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status'); const s = await r.json();
+    document.getElementById('sH').textContent = s.heading + '\u00B0';
+    document.getElementById('sS').textContent = s.speed;
+    document.getElementById('sD').textContent = s.distance_traveled + 'm';
+    document.getElementById('sR').textContent = s.distance_to_start + 'm';
+    document.getElementById('sT').textContent = s.detections;
+    document.getElementById('sF').textContent = Math.round(s.fps);
+    document.getElementById('sM').textContent = s.vo_matches || 0;
+    document.getElementById('sI').textContent = s.vo_inliers || 0;
+    const sl = document.getElementById('stL');
+    sl.textContent = s.state; sl.className = 'state ' + s.state;
+    if (s.detections > lastTC) { addLog('Threat detected! Total: '+s.detections,'threat'); lastTC = s.detections; }
+  } catch(e) {}
+}
+function pollCam() { document.getElementById('camFeed').src = '/api/camera?' + Date.now(); }
+async function doAction(a) {
+  await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})});
+  addLog('Action: '+a, 'nav');
+}
+function addLog(msg, type) {
+  const log = document.getElementById('log');
+  const t = new Date().toLocaleTimeString();
+  log.innerHTML = `<div class="le ${type}">[${t}] ${msg}</div>` + log.innerHTML;
+  if (log.children.length > 50) log.lastChild.remove();
+}
+
+setInterval(pollMap, 250);
+setInterval(pollStatus, 500);
+setInterval(pollCam, 1000);
+addLog('Dashboard connected', 'info');
+</script>
+</body>
+</html>

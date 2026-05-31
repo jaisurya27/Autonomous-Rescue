@@ -1,0 +1,48 @@
+"""config.py — All tunable parameters."""
+
+# Sensor calibration
+ACCEL_BIAS_X = 0.015
+ACCEL_BIAS_Y = 0.015
+GYRO_BIAS_Z = 0.0
+
+# Occupancy grid
+GRID_RESOLUTION = 0.05
+GRID_WIDTH = 200
+GRID_HEIGHT = 200
+START_X = GRID_WIDTH // 2
+START_Y = GRID_HEIGHT // 2
+L_FREE = -0.4
+L_OCCUPIED = 0.85
+L_PRIOR = 0.0
+L_MAX = 5.0
+L_MIN = -5.0
+
+# Distance sensor
+TOF_MAX_RANGE = 2.0
+
+# Navigation
+BREADCRUMB_INTERVAL = 0.10
+EXPLORATION_TIMEOUT = 180
+OBSTACLE_THRESHOLD = 0.25
+WALL_FOLLOW_DISTANCE = 0.40
+MOTOR_BASE_SPEED = 150
+MOTOR_TURN_SPEED = 100
+MOTOR_STOP = 0
+
+# Detection / Camera
+CAMERA_INDEX = 0
+CAMERA_WIDTH = 320
+CAMERA_HEIGHT = 240
+CAMERA_FOCAL_LENGTH = 300
+PERSON_HEIGHT_METERS = 1.7
+
+# Threat deduplication
+THREAT_DEDUP_DISTANCE = 10  # grid cells (~0.5m) — ignore new threat if one exists within this radius
+
+# Web
+FLASK_HOST = "0.0.0.0"
+FLASK_PORT = 5000
+
+# Dead reckoning
+DT = 0.02
+IMU_SAMPLE_RATE = 50
