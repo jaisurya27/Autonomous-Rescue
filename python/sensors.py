@@ -66,3 +66,8 @@ class SensorReader:
     def get_servo(self):
         try: return int(Bridge.call("get_servo"))
         except Exception: return 90
+
+    def set_indicator(self, mode):
+        # 0=off 1=explore(solid blue) 2=sweep(blink red+beep) 3=return(blink green) 4=person(beep)
+        try: Bridge.call("set_indicator", int(mode))
+        except Exception: pass

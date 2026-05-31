@@ -38,11 +38,11 @@ status = {"state":"idle","speed":0,"heading":0,"distance_traveled":0,
           "vo_matches":0,"vo_inliers":0}
 
 def _emergency_stop():
-    """Called on app stop / SIGTERM — kills motors immediately so the car
-    doesn't keep driving after the Python process exits."""
+    """Called on app stop / SIGTERM — kills motors and indicator immediately."""
     try:
         sensor_reader.send_command(0, 0)
         sensor_reader.send_command(0, 0)   # send twice in case first is dropped
+        sensor_reader.set_indicator(0)     # LEDs off, buzzer silent
     except Exception:
         pass
 
@@ -51,6 +51,34 @@ signal.signal(signal.SIGTERM, lambda *_: (_emergency_stop(), exit(0)))
 signal.signal(signal.SIGINT,  lambda *_: (_emergency_stop(), exit(0)))
 
 app = Flask(__name__)
+
+_last_indicator = -1
+_last_person_count = 0
+
+def _update_indicator(state, phase, confirmed):
+    """Send set_indicator(mode) only when mode changes, to avoid flooding Bridge."""
+    global _last_indicator, _last_person_count
+    # Person beep fires on each new confirmed detection (mode 4 is one-shot on MCU)
+    if len(confirmed) > _last_person_count:
+        _last_person_count = len(confirmed)
+        sensor_reader.set_indicator(4)
+        return
+    _last_person_count = len(confirmed)
+
+    # Pick mode from state + phase
+    if state == "return":
+        mode = 3
+    elif state in ("explore", "approach") and phase in (
+            "sweep_servo", "sweep_pivot", "sweep_rear", "commit", "backup"):
+        mode = 2   # searching for new route
+    elif state in ("explore", "approach"):
+        mode = 1   # normal cruise / approaching person → solid blue
+    else:
+        mode = 0   # idle / arrived
+
+    if mode != _last_indicator:
+        _last_indicator = mode
+        sensor_reader.set_indicator(mode)
 
 def init_camera():
     global camera
@@ -109,6 +137,9 @@ def control_loop():
                 fs.us_distance  if fs.valid else 0.0,
                 px, py, pth, confirmed)
         sensor_reader.send_command(left, right)
+
+        # ── indicator LED / buzzer ──
+        _update_indicator(nav.state_name, nav._phase, confirmed)
 
         lc += 1; now = time.time()
         if now - ft >= 1.0:

@@ -21,6 +21,11 @@ const int PWMA = 5, PWMB = 6, AIN1 = 7, BIN1 = 8, STBY = 3;
 const int LEFT_FWD = HIGH, RIGHT_FWD = HIGH;
 const int SERVO_PIN = 11, SERVO_MIN = 20, SERVO_MAX = 160;
 
+const int RED_PIN   = A0;
+const int GREEN_PIN = A1;
+const int BLUE_PIN  = A2;
+const int BUZZER    = 10;
+
 // Front HC-SR04 (body-fixed). Elegoo V4 standard; swap if us always reads 0.
 const int US_TRIG = 13, US_ECHO = 12;
 const unsigned long US_TIMEOUT_US = 12000;   // ~2 m cap (limits servo jitter)
@@ -36,9 +41,36 @@ float g_tof_mm=0, g_temp_c=0, g_us_cm=0;
 
 int servoAngle = 90;
 volatile int servoPulseUs = 1500;
-unsigned long lastRefresh = 0, lastServo = 0, lastUS = 0;
+unsigned long lastRefresh = 0, lastServo = 0, lastUS = 0, lastLED = 0;
 const unsigned long REFRESH_MS = 50;
 const unsigned long US_INTERVAL_MS = 100;  // read US no faster than 10 Hz
+
+// ---- indicator state ----
+// 0=off  1=explore(solid blue)  2=sweep(blink red+beep)
+// 3=return(blink green)  4=person(one beep, then restore)
+volatile int  g_indicator = 0;
+int  g_prev_indicator = 0;   // mode before a person beep, to restore after
+bool g_led_on = false;
+unsigned long g_beep_until = 0;
+int  g_beep_phase = 0;       // 0=first beep 1=gap 2=second beep 3=silence (sweep only)
+
+void set_rgb(bool r, bool g, bool b) {
+    digitalWrite(RED_PIN,   r ? HIGH : LOW);
+    digitalWrite(GREEN_PIN, g ? HIGH : LOW);
+    digitalWrite(BLUE_PIN,  b ? HIGH : LOW);
+}
+void set_indicator(int mode) {
+    if (mode == 4) {           // person: one short beep then restore
+        g_prev_indicator = g_indicator;
+        g_indicator = 4;
+        g_beep_until = millis() + 120;
+        tone(BUZZER, 1200);
+    } else {
+        g_indicator = mode;
+        noTone(BUZZER);
+    }
+    g_led_on = false; g_beep_phase = 0;
+}
 
 // ---- motors (your TB6612: one dir pin per side) ----
 void driveOne(int pwmPin, int dirPin, int fwd, int speed) {
@@ -67,6 +99,48 @@ void servoPulse() {
     digitalWrite(SERVO_PIN, HIGH);
     delayMicroseconds(servoPulseUs);
     digitalWrite(SERVO_PIN, LOW);
+}
+
+// ---- indicator update (call every loop, non-blocking) ----
+void updateIndicator() {
+    unsigned long now = millis();
+
+    // mode 4: person beep — one short tone, then restore previous mode
+    if (g_indicator == 4) {
+        if (now >= g_beep_until) {
+            noTone(BUZZER);
+            g_indicator = g_prev_indicator;
+            g_led_on = false; g_beep_phase = 0;
+        }
+        return;   // LED stays as-is during the beep
+    }
+
+    if (g_indicator == 0) { set_rgb(0,0,0); noTone(BUZZER); return; }
+    if (g_indicator == 1) { set_rgb(0,0,1); noTone(BUZZER); return; }  // solid blue
+
+    // modes 2 (sweep/red blink + beep-beep) and 3 (return/green blink)
+    const unsigned long BLINK_HALF = 300;   // ms per half-cycle
+    // sweep beep pattern: beep(150ms) gap(100ms) beep(150ms) silence(500ms)
+    const unsigned long BEEP_DURATIONS[] = {150, 100, 150, 500};
+
+    if (now - lastLED >= BLINK_HALF) {
+        lastLED = now;
+        g_led_on = !g_led_on;
+        if (g_indicator == 2) set_rgb(g_led_on, 0, 0);   // blink red
+        else                  set_rgb(0, g_led_on, 0);   // blink green
+    }
+
+    if (g_indicator == 2) {
+        // beep-beep pattern driven by g_beep_phase
+        if (now >= g_beep_until) {
+            g_beep_phase = (g_beep_phase + 1) % 4;
+            g_beep_until = now + BEEP_DURATIONS[g_beep_phase];
+            if (g_beep_phase == 0 || g_beep_phase == 2) tone(BUZZER, 900);
+            else                                         noTone(BUZZER);
+        }
+    } else {
+        noTone(BUZZER);
+    }
 }
 
 // ---- front ultrasonic (HC-SR04); cm, 0 = no echo/out of range ----
@@ -109,23 +183,29 @@ void setup() {
     pinMode(US_TRIG,OUTPUT); pinMode(US_ECHO,INPUT);
     digitalWrite(US_TRIG,LOW);
 
+    pinMode(RED_PIN,OUTPUT); pinMode(GREEN_PIN,OUTPUT); pinMode(BLUE_PIN,OUTPUT);
+    pinMode(BUZZER,OUTPUT);
+    set_rgb(0,0,0); noTone(BUZZER);
+
     Modulino.begin();
     has_imu    = imu.begin();
     has_tof    = tof.begin();
     has_thermo = thermo.begin();
 
     Bridge.begin();
-    Bridge.provide("read_sensors", read_sensors);
-    Bridge.provide("set_motors", set_motors);
-    Bridge.provide("set_servo", set_servo);
-    Bridge.provide("get_servo", get_servo);
+    Bridge.provide("read_sensors",  read_sensors);
+    Bridge.provide("set_motors",    set_motors);
+    Bridge.provide("set_servo",     set_servo);
+    Bridge.provide("get_servo",     get_servo);
+    Bridge.provide("set_indicator", set_indicator);
 }
 
 void loop() {
     unsigned long now = millis();
-    if (now - lastServo >= 20) { lastServo = now; servoPulse(); }
+    if (now - lastServo >= 20)           { lastServo = now;   servoPulse(); }
     if (now - lastRefresh >= REFRESH_MS) { lastRefresh = now; refreshSensors(); }
-    // Read ultrasonic BEFORE Bridge.update() so pulseIn never blocks mid-call.
-    if (now - lastUS >= US_INTERVAL_MS) { lastUS = now; g_us_cm = readUltrasonicCm(); }
+    // US before Bridge so pulseIn never blocks mid-call (prevents heap corruption).
+    if (now - lastUS >= US_INTERVAL_MS)  { lastUS = now; g_us_cm = readUltrasonicCm(); }
+    updateIndicator();
     Bridge.update();
 }
