@@ -62,6 +62,7 @@ class Navigator:
         self._sweep_start_h    = 0.0  # robot heading when sweep began
         self._sweep_target_h   = 0.0  # heading the car is turning to for this step
         self._settle_t         = None
+        self._step_start_t     = 0.0  # per-step timeout for sweep pivots
         self._sweep_attempts   = 0
         self._sweep_ref_pos    = (0.0, 0.0)
 
@@ -79,6 +80,7 @@ class Navigator:
 
         # approach
         self._approach_logged  = False
+        self._rtheta           = 0.0
 
         # return
         self._return_turn_start = None
@@ -106,6 +108,7 @@ class Navigator:
         self._sweep_samples    = []
         self._sweep_step       = 0
         self._settle_t         = None
+        self._step_start_t     = 0.0
         self._sweep_attempts   = 0
         self._sweep_ref_pos    = (0.0, 0.0)
         self._commit_target    = 0.0
@@ -133,6 +136,9 @@ class Navigator:
     # ── main entry ───────────────────────────────────────────────────────────
 
     def compute_command(self, tof, us, rx, ry, rtheta, detections, cam_blocked=False):
+        # store for use in _check_stuck which doesn't receive rtheta directly
+        self._rtheta = rtheta
+
         if self.state in (NavState.IDLE, NavState.ARRIVED):
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
@@ -193,10 +199,7 @@ class Navigator:
             if now < self._stuck_rev_until:
                 return self._reverse()
             self._stuck_reversing = False
-            self._phase = "sweep"
-            self._sweep_step = 0
-            self._sweep_samples = []
-            self._settle_t = None
+            self._start_sweep(self._rtheta, rx, ry)
             self._stuck_ref_pos = (rx, ry)
             self._stuck_ref_t   = now
             return None
@@ -339,46 +342,53 @@ class Navigator:
             self.motion = "stop"
             return
 
-        self._sweep_samples = []
-        self._sweep_step    = 0
-        self._sweep_start_h = rtheta
-        self._settle_t      = None
-        self._phase         = "sweep"
-        self._phase_t       = now
+        self._sweep_samples  = []
+        self._sweep_step     = 0
+        self._sweep_start_h  = rtheta
+        self._settle_t       = None
+        self._phase          = "sweep"
+        self._phase_t        = now
+        self._step_start_t   = now   # per-step timeout timer
         # first target: turn car LEFT 90° from current heading
         self._sweep_target_h = _wrap(rtheta + math.radians(SWEEP_OFFSETS[0]))
         self.motion = "stop"
 
     def _sweep_step_exec(self, tof, us, rtheta, now, rx, ry):
-        """Rotate car to each of LEFT/CENTER/RIGHT, read clearance, pick best."""
+        """Rotate car to LEFT-90 / CENTER / RIGHT-90, read clearance, pick best.
+
+        Each step has its own timeout tracked by _step_start_t so a slow-turning
+        car on step 2 or 3 doesn't immediately time out using the sweep-start time.
+        """
         if self._sweep_step >= len(SWEEP_OFFSETS):
-            # all samples collected
             self._finish_sweep(rtheta, now)
             return MOTOR_STOP, MOTOR_STOP
 
-        # phase A: turn to target heading
+        # ── A: pivot to the target heading for this step ──
         if self._settle_t is None:
             err = _ang_diff(self._sweep_target_h, rtheta)
-            timed_out = (now - self._phase_t) > PIVOT_STEP_TIMEOUT
+            step_elapsed = now - self._step_start_t
+            timed_out = step_elapsed > PIVOT_STEP_TIMEOUT
+
             if abs(err) > HEADING_TOLERANCE and not timed_out:
                 return self._pivot(+1 if err > 0 else -1)
-            # arrived (or timed out) — start settling
+
+            # reached heading (or timed out) — start settle window
             self._settle_t = now
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        # phase B: settle so camera/ToF stabilise
+        # ── B: wait for sensors to settle ──
         if (now - self._settle_t) < SWEEP_SETTLE_S:
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        # phase C: record clearance at this heading
+        # ── C: record clearance at this heading ──
         clearance = self._front_clearance(tof, us)
         self._sweep_samples.append((_wrap(rtheta), clearance))
 
         self._sweep_step += 1
         self._settle_t    = None
-        self._phase_t     = now
+        self._step_start_t = now   # reset per-step timer for next step
 
         if self._sweep_step < len(SWEEP_OFFSETS):
             self._sweep_target_h = _wrap(
