@@ -1,64 +1,78 @@
-"""navigator.py — Explore / classify / return state machine.
+"""navigator.py — Explore / approach-person / return state machine.
 
-Recon logic (rewritten to stop the "stuck sweeping at a wall" bug):
+Recon logic:
 
-  CRUISE   drive forward while the front is clear.
-  SWEEP    on an obstacle: rotate the WHOLE CAR in SWEEP_STEP_DEG steps through a
-           full 360 deg, reading front clearance (ultrasonic + centered ToF) at
-           each heading. The front ultrasonic is body-fixed so it always reads
-           straight ahead; that is the trusted front-obstacle source.
-  COMMIT   turn in place to the most-open heading (gyro closed-loop).
-  ADVANCE  drive forward; only SWEEP again once actually blocked again — never
-           re-scan in place (that was the infinite loop).
-  DEAD-END if every swept heading is below MIN_CLEARANCE, back up briefly then
-           head to the least-bad direction. Always makes progress.
+  CRUISE      Drive forward while front is clear.
 
-RETURN replays breadcrumbs using the motion-model pose (see dead_reckoning.py),
-which no longer drifts the way visual odometry did.
+  SWEEP       On an obstacle: use the servo to look LEFT / CENTER / RIGHT
+              (±90 deg) without moving the car — that covers the front 180 deg.
+              Then pivot the car 180 deg and repeat the servo sweep for the rear
+              180 deg. Pick the most open heading from all 6 samples and commit.
+              Much faster than rotating the whole car 8 × 45 deg.
 
-The navigator reports what it is commanding each loop via `self.motion`
-("forward" | "pivot" | "stop") so the odometry can advance the pose correctly.
+  COMMIT      Turn in place to the chosen heading (gyro closed-loop).
+  ADVANCE     Drive forward; only SWEEP again when blocked.
+  BACKUP      Dead-end escape: reverse then commit to least-bad heading.
+
+  APPROACH    A confirmed person was seen. Drive forward slowly, using the front
+              ultrasonic AND the camera bbox size to know when close enough.
+              Do NOT stop immediately — mark the position and come closer.
+              Once close, log the confirmed position and resume CRUISE.
+
+RETURN replays breadcrumbs from the motion-model pose.
+
+nav.motion flag ("forward"|"pivot"|"stop") lets dead_reckoning.py advance
+the pose only when the robot is actually translating.
 """
 
 import math, time
 from enum import Enum
 from config import (MOTOR_BASE_SPEED, MOTOR_TURN_SPEED, MOTOR_STOP,
-                    US_STOP_DISTANCE, TOF_STOP_DISTANCE, SWEEP_STEP_DEG,
+                    US_STOP_DISTANCE, TOF_STOP_DISTANCE,
                     SWEEP_SETTLE_S, MIN_CLEARANCE, PIVOT_STEP_TIMEOUT,
-                    BACKUP_TIME, EXPLORATION_TIMEOUT, SERVO_CENTER)
+                    BACKUP_TIME, EXPLORATION_TIMEOUT,
+                    SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT, SERVO_SWEEP_ANGLES,
+                    PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
 
-CLASSIFY_PAUSE = 1.5
-HEADING_TOLERANCE = math.radians(12)     # "reached" a target heading
-SWEEP_SAMPLES = max(2, round(360 / SWEEP_STEP_DEG))
+HEADING_TOLERANCE = math.radians(12)
+MOTOR_APPROACH_SPEED = 35   # slower than cruise when closing on a person
 
 class NavState(Enum):
-    IDLE="idle"; EXPLORE="explore"; CLASSIFY="classify"; RETURN="return"; ARRIVED="arrived"
+    IDLE="idle"; EXPLORE="explore"; APPROACH="approach"; RETURN="return"; ARRIVED="arrived"
 
 def _ang_diff(a, b):
-    """Smallest signed angle a-b in (-pi, pi]."""
     return math.atan2(math.sin(a - b), math.cos(a - b))
+
+def _wrap(a):
+    return math.atan2(math.sin(a), math.cos(a))
+
+# Servo angle (deg from center, e.g. -90/0/+90) -> absolute servo position
+def _servo_pos(offset_deg):
+    return max(20, min(160, SERVO_CENTER + offset_deg))
 
 class Navigator:
     def __init__(self, sensors=None):
         self.state = NavState.IDLE
         self._explore_start = None
-        self._classify_start = None
         self._return_path = []
         self._return_idx = 0
         self.sensors = sensors
-        self.servo_angle = SERVO_CENTER     # kept for detector/grid bearing
-        self.motion = "stop"                # forward | pivot | stop (for odometry)
+        self.servo_angle = SERVO_CENTER
+        self.motion = "stop"
 
         # recon sub-state
-        self._phase = "cruise"              # cruise | sweep | commit | advance | backup
-        self._sweep_samples = []            # list of (heading, clearance)
-        self._sweep_start_heading = None
-        self._sweep_target = None           # next heading to pivot to during sweep
+        self._phase = "cruise"
+        self._sweep_samples = []       # [(world_heading, clearance), ...]
+        self._sweep_step = 0           # index into the current sweep sequence
+        self._sweep_half = 0           # 0 = front half, 1 = rear half
+        self._settle_t = None
         self._phase_t = 0.0
-        self._settle_t = None               # set when a sweep step starts settling
-        self._commit_target = None          # heading to commit-turn toward
+        self._commit_target = None
+        # APPROACH state
+        self._approach_logged = False
 
-    # ---- transitions ----
+    # ── transitions ──────────────────────────────────────────────────────────
+
     def start_exploration(self):
         self._reset_recon()
         self.state = NavState.EXPLORE
@@ -77,25 +91,34 @@ class Navigator:
     def _reset_recon(self):
         self._phase = "cruise"
         self._sweep_samples = []
-        self._sweep_start_heading = None
-        self._sweep_target = None
+        self._sweep_step = 0
+        self._sweep_half = 0
         self._settle_t = None
         self._commit_target = None
+        self._approach_logged = False
         self.motion = "stop"
+        self._set_servo(SERVO_CENTER)
+
+    def _set_servo(self, deg):
+        self.servo_angle = deg
         if self.sensors:
-            self.sensors.set_servo(SERVO_CENTER)
-        self.servo_angle = SERVO_CENTER
+            self.sensors.set_servo(deg)
+
+    # ── properties ───────────────────────────────────────────────────────────
 
     @property
     def state_name(self): return self.state.value
-    @property
-    def is_exploring(self): return self.state in (NavState.EXPLORE, NavState.CLASSIFY)
+
     @property
     def exploration_elapsed(self):
         return time.time() - self._explore_start if self._explore_start else 0.0
 
-    # ---- main entry ----
-    def compute_command(self, tof, us, rx, ry, rtheta, has_det):
+    # ── main entry ───────────────────────────────────────────────────────────
+
+    def compute_command(self, tof, us, rx, ry, rtheta, detections):
+        """detections: list of confirmed Detection objects (may be empty).
+        Returns (left_speed, right_speed)."""
+
         if self.state in (NavState.IDLE, NavState.ARRIVED):
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
@@ -105,142 +128,253 @@ class Navigator:
             self._reset_recon()
             return MOTOR_STOP, MOTOR_STOP
 
-        # Pause to log a person only while cruising (head forward, bearing valid).
-        if (has_det and self.state == NavState.EXPLORE and self._phase == "cruise"):
-            self.state = NavState.CLASSIFY
-            self._classify_start = time.time()
-
-        if self.state == NavState.CLASSIFY:
-            self.motion = "stop"
-            if time.time() - self._classify_start < CLASSIFY_PAUSE:
-                return MOTOR_STOP, MOTOR_STOP
-            self.state = NavState.EXPLORE
-
         if self.state == NavState.RETURN:
             return self._return_drive(rx, ry, rtheta)
 
-        return self._explore_drive(tof, us, rtheta)
+        if self.state == NavState.APPROACH:
+            return self._approach_drive(tof, us, detections, rx, ry, rtheta)
 
-    # ---- helpers ----
-    @staticmethod
-    def _front_clear_dist(tof, us, head_centered):
-        """Best estimate of forward clearance. US is body-fixed (always fwd);
-        ToF only counts when the head is centered. 0 readings mean 'no return'
-        which we treat as far/open (99)."""
-        vals = []
-        vals.append(us if us > 0.01 else 99.0)
-        if head_centered:
+        # EXPLORE
+        return self._explore_drive(tof, us, rtheta, detections)
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _front_dist(self, tof, us):
+        """Trusted forward clearance. US is always forward; ToF only when
+        the servo is centered. 0 means no reading → treat as open (99)."""
+        vals = [us if us > 0.01 else 99.0]
+        if abs(self.servo_angle - SERVO_CENTER) < 5:
             vals.append(tof if tof > 0.01 else 99.0)
         return min(vals)
 
     def _pivot(self, direction):
-        """direction +1 = left (CCW), -1 = right (CW). Sets motion=pivot."""
         self.motion = "pivot"
         return ((-MOTOR_TURN_SPEED, MOTOR_TURN_SPEED) if direction > 0
                 else (MOTOR_TURN_SPEED, -MOTOR_TURN_SPEED))
 
-    # ---- explore FSM ----
-    def _explore_drive(self, tof, us, rtheta):
+    def _is_blocked(self, tof, us):
+        return ((us > 0.01 and us < US_STOP_DISTANCE) or
+                (abs(self.servo_angle - SERVO_CENTER) < 5 and 0.01 < tof < TOF_STOP_DISTANCE))
+
+    # ── APPROACH: come closer to a detected person ────────────────────────────
+
+    def _approach_drive(self, tof, us, detections, rx, ry, rtheta):
+        """Drive slowly toward the person using US + bbox size as proximity.
+        Once close enough (or blocked), log 'close confirm' and resume explore."""
         now = time.time()
-        head_centered = (self.servo_angle == SERVO_CENTER)
-        front = self._front_clear_dist(tof, us, head_centered)
 
-        # ---------------- CRUISE ----------------
-        if self._phase == "cruise":
-            blocked = (us > 0.01 and us < US_STOP_DISTANCE) or \
-                      (head_centered and 0.01 < tof < TOF_STOP_DISTANCE)
-            if blocked:
-                # begin a fresh 360 sweep from the current heading
-                self._phase = "sweep"
-                self._sweep_samples = []
-                self._sweep_start_heading = rtheta
-                self._sweep_target = rtheta                 # sample here first
-                self._phase_t = now
-                self.motion = "stop"
-                return MOTOR_STOP, MOTOR_STOP
-            self.motion = "forward"
-            return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED
+        # check if close enough by US distance or bbox height
+        us_close = (0.01 < us < PERSON_APPROACH_DIST)
+        bbox_close = any(
+            (d.bbox[3] - d.bbox[1]) >= PERSON_BBOX_CLOSE_PX
+            for d in detections
+        )
 
-        # ---------------- SWEEP ----------------
-        # Per step: (1) pivot to the target heading, (2) settle, (3) record the
-        # front clearance, then advance to the next heading or finish.
-        if self._phase == "sweep":
-            if self._settle_t is None:
-                err = _ang_diff(self._sweep_target, rtheta)
-                reached = abs(err) <= HEADING_TOLERANCE
-                timed_out = (now - self._phase_t) > PIVOT_STEP_TIMEOUT
-                if not reached and not timed_out:
-                    return self._pivot(+1)          # rotate CCW toward target
-                self._settle_t = now                 # begin settle window
-                self.motion = "stop"
-                return MOTOR_STOP, MOTOR_STOP
-
-            # settling
-            if (now - self._settle_t) < SWEEP_SETTLE_S:
-                self.motion = "stop"
-                return MOTOR_STOP, MOTOR_STOP
-
-            # record this heading's clearance
-            self._sweep_samples.append((rtheta, front))
-            self._settle_t = None
-            if len(self._sweep_samples) >= SWEEP_SAMPLES:
-                return self._finish_sweep(rtheta, now)
-            self._sweep_target = _wrap(rtheta + math.radians(SWEEP_STEP_DEG))
-            self._phase_t = now
+        if us_close or bbox_close:
+            # we're close — resume exploration
+            self.state = NavState.EXPLORE
+            self._phase = "cruise"
+            self._set_servo(SERVO_CENTER)
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        # ---------------- COMMIT (turn to chosen heading) ----------------
+        # if front is physically blocked (wall not person), sweep instead
+        if self._is_blocked(tof, us):
+            self.state = NavState.EXPLORE
+            self._start_sweep(rtheta, now)
+            self.motion = "stop"
+            return MOTOR_STOP, MOTOR_STOP
+
+        # if person lost from camera, just resume cruise
+        if not detections:
+            self.state = NavState.EXPLORE
+            self._phase = "cruise"
+            self.motion = "stop"
+            return MOTOR_STOP, MOTOR_STOP
+
+        self.motion = "forward"
+        return MOTOR_APPROACH_SPEED, MOTOR_APPROACH_SPEED
+
+    # ── EXPLORE ───────────────────────────────────────────────────────────────
+
+    def _explore_drive(self, tof, us, rtheta, detections):
+        now = time.time()
+
+        # ── CRUISE ──
+        if self._phase == "cruise":
+            # Person spotted → switch to APPROACH (don't stop, come closer)
+            if detections:
+                self.state = NavState.APPROACH
+                self._approach_logged = False
+                self._set_servo(SERVO_CENTER)
+                self.motion = "stop"
+                return MOTOR_STOP, MOTOR_STOP
+
+            if self._is_blocked(tof, us):
+                self._start_sweep(rtheta, now)
+                self.motion = "stop"
+                return MOTOR_STOP, MOTOR_STOP
+
+            self.motion = "forward"
+            return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED
+
+        # ── SWEEP (servo half) ──
+        if self._phase == "sweep_servo":
+            return self._sweep_servo_step(tof, us, rtheta, now)
+
+        # ── SWEEP PIVOT (car rotates 180 for rear half) ──
+        if self._phase == "sweep_pivot":
+            return self._sweep_pivot_step(rtheta, now)
+
+        # ── SWEEP REAR (servo sweep of rear half after 180 pivot) ──
+        if self._phase == "sweep_rear":
+            return self._sweep_servo_step(tof, us, rtheta, now, rear=True)
+
+        # ── COMMIT ──
         if self._phase == "commit":
             err = _ang_diff(self._commit_target, rtheta)
             if abs(err) > HEADING_TOLERANCE and (now - self._phase_t) < PIVOT_STEP_TIMEOUT * 2:
                 return self._pivot(+1 if err > 0 else -1)
             self._phase = "advance"
-            self._phase_t = now
+            self._set_servo(SERVO_CENTER)
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        # ---------------- ADVANCE (drive until blocked again) ----------------
+        # ── ADVANCE ──
         if self._phase == "advance":
-            blocked = (us > 0.01 and us < US_STOP_DISTANCE) or \
-                      (head_centered and 0.01 < tof < TOF_STOP_DISTANCE)
-            if blocked:
-                self._phase = "cruise"          # will re-trigger a sweep next call
+            if detections:
+                self.state = NavState.APPROACH
+                self._approach_logged = False
+                self._set_servo(SERVO_CENTER)
+                self.motion = "stop"
+                return MOTOR_STOP, MOTOR_STOP
+            if self._is_blocked(tof, us):
+                self._phase = "cruise"
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
             self.motion = "forward"
             return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED
 
-        # ---------------- BACKUP (dead-end escape) ----------------
+        # ── BACKUP ──
         if self._phase == "backup":
             if (now - self._phase_t) < BACKUP_TIME:
-                self.motion = "stop"            # reversing isn't tracked as forward
+                self.motion = "stop"
                 return -MOTOR_BASE_SPEED, -MOTOR_BASE_SPEED
-            # after backing up, commit toward the least-bad heading found
             self._phase = "commit"
             self._phase_t = now
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
-        # safety fallback
+        # fallback
         self._phase = "cruise"
         self.motion = "stop"
         return MOTOR_STOP, MOTOR_STOP
 
-    def _finish_sweep(self, rtheta, now):
-        """Pick the most-open heading from the sweep; commit or escape dead-end."""
+    # ── SWEEP internals ───────────────────────────────────────────────────────
+
+    def _start_sweep(self, rtheta, now):
+        self._sweep_samples = []
+        self._sweep_step = 0
+        self._sweep_half = 0
+        self._settle_t = None
+        self._phase_t = now
+        self._phase = "sweep_servo"
+        # point servo at first angle of the front sweep
+        self._set_servo(_servo_pos(SERVO_SWEEP_ANGLES[0]))
+
+    def _sweep_servo_step(self, tof, us, rtheta, now, rear=False):
+        """Servo sweeps through SERVO_SWEEP_ANGLES without moving the car.
+        Each step: command servo angle → settle → read ToF → record.
+        Clearance at a given servo angle = ToF distance (the head points that way).
+        The world heading for each sample = robot heading + servo offset."""
+        angles = SERVO_SWEEP_ANGLES
+
+        if self._settle_t is None:
+            # command the servo and wait for it to arrive
+            target_servo = _servo_pos(angles[self._sweep_step])
+            self._set_servo(target_servo)
+            self._settle_t = now
+            self.motion = "stop"
+            return MOTOR_STOP, MOTOR_STOP
+
+        if (now - self._settle_t) < SWEEP_SETTLE_S:
+            self.motion = "stop"
+            return MOTOR_STOP, MOTOR_STOP
+
+        # read clearance: ToF is on the head so it now points at this angle
+        clearance = tof if tof > 0.01 else 99.0
+        # world heading = robot heading + servo offset (in radians)
+        offset_rad = math.radians(angles[self._sweep_step])
+        # note: servo LEFT (positive offset) = CCW = positive angle
+        world_h = _wrap(rtheta + offset_rad)
+        self._sweep_samples.append((world_h, clearance))
+
+        self._sweep_step += 1
+        self._settle_t = None
+
+        if self._sweep_step < len(angles):
+            # move to next servo angle
+            self._set_servo(_servo_pos(angles[self._sweep_step]))
+            return MOTOR_STOP, MOTOR_STOP
+
+        # finished this half
+        self._sweep_step = 0
+        self._set_servo(SERVO_CENTER)
+
+        if not rear:
+            # front half done → pivot car 180 for rear half
+            self._phase = "sweep_pivot"
+            self._sweep_half = 1
+            self._phase_t = now
+            self._pivot_start_h = rtheta
+        else:
+            # rear half done → choose best heading
+            self._finish_sweep(now)
+
+        self.motion = "stop"
+        return MOTOR_STOP, MOTOR_STOP
+
+    def _sweep_pivot_step(self, rtheta, now):
+        """Pivot car 180 deg to face rear, then start rear servo sweep."""
+        target_h = _wrap(self._pivot_start_h + math.pi)
+        err = _ang_diff(target_h, rtheta)
+        timed_out = (now - self._phase_t) > PIVOT_STEP_TIMEOUT * 2
+
+        if abs(err) > HEADING_TOLERANCE and not timed_out:
+            return self._pivot(+1)
+
+        # reached 180° position → settle then do rear servo sweep
+        if self._settle_t is None:
+            self._settle_t = now
+            self.motion = "stop"
+            return MOTOR_STOP, MOTOR_STOP
+
+        if (now - self._settle_t) < SWEEP_SETTLE_S:
+            self.motion = "stop"
+            return MOTOR_STOP, MOTOR_STOP
+
+        self._settle_t = None
+        self._sweep_step = 0
+        self._phase = "sweep_rear"
+        self._set_servo(_servo_pos(SERVO_SWEEP_ANGLES[0]))
+        self.motion = "stop"
+        return MOTOR_STOP, MOTOR_STOP
+
+    def _finish_sweep(self, now):
+        """Pick the most open heading from all samples; commit or back up."""
+        if not self._sweep_samples:
+            self._phase = "cruise"
+            return
         best_h, best_c = max(self._sweep_samples, key=lambda s: s[1])
         self._commit_target = best_h
         self._phase_t = now
-        self.motion = "stop"
         if best_c < MIN_CLEARANCE:
-            # nowhere is open -> back up first, then turn to least-bad heading
             self._phase = "backup"
         else:
             self._phase = "commit"
-        return MOTOR_STOP, MOTOR_STOP
 
-    # ---- breadcrumb return-to-base ----
+    # ── RETURN ────────────────────────────────────────────────────────────────
+
     def _return_drive(self, rx, ry, rtheta):
         if self._return_idx >= len(self._return_path):
             self.state = NavState.ARRIVED
@@ -262,7 +396,3 @@ class Navigator:
             return self._pivot(+1 if err > 0 else -1)
         self.motion = "forward"
         return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED
-
-
-def _wrap(a):
-    return math.atan2(math.sin(a), math.cos(a))

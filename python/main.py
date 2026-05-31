@@ -90,28 +90,24 @@ def control_loop():
             dc += 1
             if dc % 5 == 0: detector.feed_frame(img)
 
-        # The ToF + camera ride on the pan servo. Convert the head's commanded
-        # angle into a bearing offset (rad) so the obstacle and any person get
-        # placed at the direction the head was actually pointing.
+        # ToF + camera ride on the pan servo; offset bearing by current head angle.
         head_bearing = math.radians(nav.servo_angle - SERVO_CENTER) * SERVO_BEARING_SIGN
 
         if fs.valid and fs.tof_distance > 0.01:
             occ_grid.update_from_distance(px, py, pth, fs.tof_distance,
                                           sensor_angle_offset=head_bearing)
         occ_grid.update_robot_position(px, py)
-        # Only log CONFIRMED people (seen several frames in a row) as threats.
-        for det in detector.get_confirmed():
+
+        confirmed = detector.get_confirmed()
+        for det in confirmed:
             det = detector.project_to_world(det, px, py, pth, head_bearing)
             occ_grid.add_threat(det.world_x, det.world_y, det.label, det.confidence)
 
-        # Only react (pause to classify) to confirmed people, and only when the
-        # head is centered so the bearing is meaningful.
-        has_det = len(detector.get_confirmed()) > 0
         with nav_lock:
             left, right = nav.compute_command(
                 fs.tof_distance if fs.valid else 0.0,
                 fs.us_distance  if fs.valid else 0.0,
-                px, py, pth, has_det)
+                px, py, pth, confirmed)
         sensor_reader.send_command(left, right)
 
         lc += 1; now = time.time()

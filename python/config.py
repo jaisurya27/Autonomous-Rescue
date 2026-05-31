@@ -29,13 +29,17 @@ MOTOR_TURN_SPEED = 75
 MOTOR_STOP = 0
 
 # --- Recon / obstacle avoidance ---
-US_STOP_DISTANCE   = 0.05   # front ultrasonic hard stop (m) [5 cm]
-TOF_STOP_DISTANCE  = 0.25   # head ToF stop when centered (m)
-SWEEP_STEP_DEG     = 45     # car-rotation step for the 360 deg scan
-SWEEP_SETTLE_S     = 0.35   # wait after each pivot step before reading distance
-MIN_CLEARANCE      = 0.10   # if best clearance everywhere below this -> dead end
-PIVOT_STEP_TIMEOUT = 1.4    # s, safety cap per pivot step
-BACKUP_TIME        = 0.6    # s reverse when in a dead end
+US_STOP_DISTANCE      = 0.05   # front ultrasonic hard stop (m) [5 cm]
+TOF_STOP_DISTANCE     = 0.25   # head ToF stop when centered (m)
+SWEEP_SETTLE_S        = 0.35   # wait after each servo/pivot step before reading
+MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
+PIVOT_STEP_TIMEOUT    = 1.4    # s, safety cap per pivot step
+BACKUP_TIME           = 0.6    # s reverse when in a dead end
+# Person approach
+PERSON_APPROACH_DIST  = 0.30   # stop this close to a detected person (m)
+PERSON_BBOX_CLOSE_PX  = 180    # bbox height in px = "close enough" (fallback)
+# 360 sweep: servo covers ±90 deg (3 samples), car pivots 180 for the other side
+SERVO_SWEEP_ANGLES    = [-90, 0, 90]   # degrees from center; servo pans these
 
 # --- Motion-model odometry (replaces drifting VO translation) ---
 CRUISE_SPEED_MPS   = 0.20   # forward speed at MOTOR_BASE_SPEED (CALIBRATE to your car)
