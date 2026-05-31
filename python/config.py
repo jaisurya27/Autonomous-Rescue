@@ -25,15 +25,15 @@ BREADCRUMB_INTERVAL = 0.10
 EXPLORATION_TIMEOUT = 180
 OBSTACLE_THRESHOLD = 0.25
 MOTOR_BASE_SPEED = 55     # your low-speed cruise (45 stalled; ~55 reliable)
-MOTOR_TURN_SPEED = 75
+MOTOR_TURN_SPEED = 40
 MOTOR_STOP = 0
 
 # --- Recon / obstacle avoidance ---
 US_STOP_DISTANCE      = 0.15   # front ultrasonic hard stop (m) [15 cm]
 TOF_STOP_DISTANCE     = 0.25   # head ToF stop when centered (m)
-SWEEP_SETTLE_S        = 0.35   # wait after each servo/pivot step before reading
+SWEEP_SETTLE_S        = 0.7    # wait after each servo/pivot step before reading (longer = camera stabilises)
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
-PIVOT_STEP_TIMEOUT    = 1.4    # s, safety cap per pivot step
+PIVOT_STEP_TIMEOUT    = 3.0    # s, safety cap per pivot step (longer at low turn speed)
 BACKUP_TIME           = 0.6    # s reverse when in a dead end
 STUCK_TIMEOUT         = 5.0    # s without meaningful movement -> force reverse+reroute
 STUCK_MOVE_THRESHOLD  = 0.04   # m — below this over STUCK_TIMEOUT = stuck
