@@ -35,7 +35,10 @@ HEADING_TOLERANCE    = math.radians(15)
 MOTOR_APPROACH_SPEED = 35
 
 # Car rotation steps during sweep (degrees from heading at sweep start).
-CAR_SWEEP_OFFSETS = [90, 0, -90]   # LEFT 90, CENTER, RIGHT 90
+CAR_SWEEP_OFFSETS = [0, 90, -90]   # CENTER first, then LEFT 90, RIGHT 90
+# Scanning at the current heading first means greedy-commit can fire in < 1 settle
+# period if a clear direction is found at ±30° or ±60°. Only if the full forward
+# arc is blocked do we rotate the car body for the wider ±90° sweep.
 
 # Servo pan order during each car position.
 # ±30° positions are checked FIRST so that a small obstacle (box, debris) gets
@@ -99,13 +102,17 @@ class Navigator:
         self._cam_center_score = 0.5
 
         # survey / sweep mode
-        self._active_sweep_offsets = CAR_SWEEP_OFFSETS   # swapped to CAR_SURVEY_OFFSETS for full scan
-        self._sweep_full           = False               # True = 360°, skip back-exclusion in finish
-        self._pending_survey       = False               # triggers full survey on next cruise tick
+        self._active_sweep_offsets = CAR_SWEEP_OFFSETS
+        self._sweep_full           = False
+        self._pending_survey       = False
 
         # cruise servo scan
-        self._cruise_servo_dir = 1      # +1 = toward SERVO_LEFT, -1 = toward SERVO_RIGHT
-        self._servo_scan_t     = 0.0    # last time servo was stepped
+        self._cruise_servo_dir = 1
+        self._servo_scan_t     = 0.0
+
+        # Forward ToF cache: only updated when servo is near centre.
+        # _is_blocked() uses this so panned servo readings don't cause false stops.
+        self._tof_forward = 99.0
 
         # return
         self._return_path          = []
@@ -164,6 +171,7 @@ class Navigator:
         self._pending_survey       = False
         self._cruise_servo_dir     = 1
         self._servo_scan_t         = 0.0
+        self._tof_forward          = 99.0
         self.motion                = "stop"
         self._set_servo(SERVO_CENTER)
 
@@ -182,12 +190,16 @@ class Navigator:
     def compute_command(self, tof, us, rx, ry, rtheta, detections,
                         cam_blocked=False, cam_left_score=0.5, cam_right_score=0.5,
                         cam_center_score=0.5):
-        # store for use in _check_stuck which doesn't receive rtheta directly
-        self._rtheta = rtheta
-        # store camera scores so sweep can use them when reading servo positions
+        self._rtheta           = rtheta
         self._cam_left_score   = cam_left_score
         self._cam_right_score  = cam_right_score
         self._cam_center_score = cam_center_score
+
+        # Cache forward ToF only when servo is near centre (within 20°).
+        # When servo is panned during cruise scan, ToF reads sideways — using that
+        # reading for obstacle detection causes constant false-positive sweeps.
+        if abs(self.servo_angle - SERVO_CENTER) <= 20:
+            self._tof_forward = tof
 
         if self.state in (NavState.IDLE, NavState.ARRIVED):
             self.motion = "stop"
@@ -229,15 +241,16 @@ class Navigator:
         return -MOTOR_REVERSE_SPEED, -MOTOR_REVERSE_SPEED
 
     def _is_blocked(self, tof, us=None):
-        """ToF is on the servo head. When panned off-centre, use US (body-fixed)
-        as an additional forward guard so the car doesn't miss a wall ahead."""
-        tof_hit = 0.01 < tof < TOF_STOP_DISTANCE
-        servo_panned = abs(self.servo_angle - SERVO_CENTER) > 20
-        us_hit = servo_panned and us is not None and 0.01 < us < US_STOP_DISTANCE
-        return tof_hit or us_hit
+        """Use the cached forward ToF reading (_tof_forward), not the current panned
+        reading. This prevents the servo cruise scan from triggering false-positive
+        obstacle stops every time it sweeps past a side wall.
+        US (body-fixed) adds a forward guard as a secondary check."""
+        fwd_blocked = 0.01 < self._tof_forward < TOF_STOP_DISTANCE
+        us_blocked  = us is not None and 0.01 < us < US_STOP_DISTANCE
+        return fwd_blocked or us_blocked
 
     def _front_clearance(self, tof, us=None):
-        """Best forward clearance: ToF in pan direction, clipped to 99 m for invalid."""
+        """Clearance in the servo's CURRENT pan direction (for sweep scoring)."""
         return tof if tof > 0.01 else 99.0
 
     # ── stuck detection ───────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ TOF_MAX_RANGE = 2.0
 
 # Navigation — calibrated to YOUR car (slow, your earlier finding)
 BREADCRUMB_INTERVAL = 0.10
-EXPLORATION_TIMEOUT = 180
+EXPLORATION_TIMEOUT = 3600  # 1 hour; was 180s which caused unexpected auto-stop
 OBSTACLE_THRESHOLD = 0.25
 MOTOR_BASE_SPEED = 55     # your low-speed cruise (45 stalled; ~55 reliable)
 MOTOR_SLOW_SPEED = 46     # reduced speed in obstacle warning zone (just above stall)
@@ -69,7 +69,7 @@ SERVO_SCAN_INTERVAL  = 0.18  # seconds between steps (≈5-6 Hz, smooth but not 
 # --- Motion-model odometry (replaces drifting VO translation) ---
 CRUISE_SPEED_MPS   = 0.20   # forward speed at MOTOR_BASE_SPEED (CALIBRATE to your car)
 GYRO_BIAS_SAMPLES  = 20     # rest samples to zero gyro drift at exploration start
-GYRO_SIGN          = 1.0    # flip to -1.0 if turns integrate the wrong way
+GYRO_SIGN          = -1.0   # flip to +1.0 if map directions are mirrored
 
 # Servo scan (your pan head) — used for smart deflection.
 # Camera + ToF are both on this head, so panning aims both.
