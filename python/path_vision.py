@@ -40,26 +40,33 @@ class PathVision:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             h, w = gray.shape
 
-            # Regions: bottom third of frame, split into left / centre / right thirds
-            y0 = h * 2 // 3
+            # Two analysis zones:
+            #   BOTTOM third  → close-range floor / cruise obstacle warning
+            #   MIDDLE third  → medium-distance scene in the camera's pan direction
+            #                   (used for sweep scoring: better represents whether the
+            #                    corridor the servo is pointing at is actually clear)
+            y_bot = h * 2 // 3         # bottom strip top edge
+            y_mid_top = h // 3         # middle strip top edge
+            y_mid_bot = h * 2 // 3     # middle strip bottom edge
             xL, xC1, xC2, xR = 0, w // 3, 2 * w // 3, w
 
-            strip_centre = gray[y0:, xC1:xC2]
-            strip_left   = gray[y0:, xL:xC1]
-            strip_right  = gray[y0:, xC2:xR]
+            strip_bot_c = gray[y_bot:,          xC1:xC2]
+            strip_bot_l = gray[y_bot:,          xL:xC1]
+            strip_bot_r = gray[y_bot:,          xC2:xR]
+            strip_mid_c = gray[y_mid_top:y_mid_bot, xC1:xC2]
 
-            var_c = float(np.var(strip_centre))
-            var_l = float(np.var(strip_left))
-            var_r = float(np.var(strip_right))
+            var_c  = float(np.var(strip_bot_c))
+            var_l  = float(np.var(strip_bot_l))
+            var_r  = float(np.var(strip_bot_r))
+            var_mc = float(np.var(strip_mid_c))   # middle-centre variance
 
             self._path_blocked = var_c > CAM_OBSTACLE_VARIANCE
-            # 1/(1+var) left/right scores kept for backward compat (cruise soft signals)
             self._left_score  = 1.0 / (1.0 + var_l)
             self._right_score = 1.0 / (1.0 + var_r)
-            # Linear 0-1 score relative to the obstacle variance threshold.
-            # 0 = clearly a wall in shot, 1 = smooth open floor/space.
-            # Used by sweep to rank directions the servo is pointing at.
-            self._center_score = max(0.0, 1.0 - var_c / CAM_OBSTACLE_VARIANCE)
+            # center_score: uses MIDDLE strip so sweep correctly evaluates whether
+            # the corridor in the servo's pan direction is clear at medium distance.
+            # Bottom-strip was floor texture, which scored "blocked" in open corridors.
+            self._center_score = max(0.0, 1.0 - var_mc / CAM_OBSTACLE_VARIANCE)
         except Exception:
             pass
 
@@ -84,15 +91,20 @@ class PathVision:
         return self._right_score
 
     def annotate(self, frame):
-        """Draw the analysis regions onto a copy of the frame for the dashboard."""
+        """Draw analysis regions onto a copy of the frame for the dashboard."""
         if frame is None:
             return frame
         d = frame.copy()
         h, w = d.shape[:2]
-        y0 = h * 2 // 3
         xC1, xC2 = w // 3, 2 * w // 3
+        # Bottom strip — cruise obstacle warning
+        y_bot = h * 2 // 3
         col = (0, 0, 255) if self._path_blocked else (0, 255, 0)
-        cv2.rectangle(d, (xC1, y0), (xC2, h), col, 2)
-        label = "BLOCKED" if self._path_blocked else "CLEAR"
-        cv2.putText(d, label, (xC1 + 4, y0 + 16), cv2.FONT_HERSHEY_PLAIN, 1.0, col, 1)
+        cv2.rectangle(d, (xC1, y_bot), (xC2, h), col, 1)
+        # Middle strip — sweep direction scoring (green=clear, red=blocked)
+        y_mid_top, y_mid_bot = h // 3, h * 2 // 3
+        cs_col = (0, 255, 0) if self._center_score > 0.3 else (0, 0, 255)
+        cv2.rectangle(d, (xC1, y_mid_top), (xC2, y_mid_bot), cs_col, 2)
+        lbl = f"cs:{self._center_score:.2f}"
+        cv2.putText(d, lbl, (xC1 + 2, y_mid_top + 14), cv2.FONT_HERSHEY_PLAIN, 0.9, cs_col, 1)
         return d

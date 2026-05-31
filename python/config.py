@@ -34,10 +34,13 @@ US_STOP_DISTANCE      = 0.18   # kept for dashboard display only — not used fo
 TOF_STOP_DISTANCE     = 0.20   # ToF hard stop (m). ToF is primary obstacle sensor.
 TOF_WARN_DISTANCE     = 0.45   # ToF slow-down zone (m): car decelerates between here and stop distance
 RETURN_TOF_STOP       = 0.20   # ToF obstacle threshold during return
-SWEEP_SETTLE_S        = 0.7    # wait after each servo/pivot step before reading (longer = camera stabilises)
+SWEEP_SETTLE_S        = 0.45   # wait after each servo/pivot step before reading
+                               # 0.45s: servo physically settles + 1-2 camera frames captured
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
-GREEDY_COMMIT_SCORE   = 3.5    # commit immediately during sweep if any direction scores this high
-                                # (avoids waiting for all samples when path is obviously clear)
+GREEDY_COMMIT_SCORE   = 2.5    # commit immediately during sweep if any direction scores this high
+                                # score = min(tof_m, 3.0) + cam_center * 2.0
+                                # tof OOR (99→3.0) alone = 3.0 > 2.5, triggers greedy even w/ flat camera
+                                # 0.5m clear + decent camera also triggers; <0.3m never triggers
 PIVOT_STEP_TIMEOUT    = 4.0    # s, safety cap per pivot step
 BACKUP_TIME           = 1.8    # s reverse on dead end / stuck (longer = more clearance gained)
 MOTOR_REVERSE_SPEED   = 65     # reverse speed (needs more than stall ~45, more than forward)
@@ -103,3 +106,14 @@ FLASK_PORT = 7000          # your standard port
 # Dead reckoning
 DT = 0.02
 IMU_SAMPLE_RATE = 50
+
+# Accelerometer-based stuck detection
+# When motors are commanded forward but |accel| shows near-zero variation,
+# the car is physically not moving (stuck against obstacle).
+# CoV = σ/μ is unit-agnostic: works for both g and m/s² IMU outputs.
+ACCEL_VAR_WINDOW    = 20     # rolling window length (samples, ≈ 0.4 s at 50 Hz)
+ACCEL_STUCK_CV      = 0.001  # (var_ax + var_az) / g² below this → stuck
+                              # moving RC car ~0.003–0.006, stuck ~0.00001–0.0004
+                              # watch [dr] log lines to see real cv on your surface
+                              # tune DOWN toward 0.0005 if false positives while moving
+ACCEL_STUCK_SAMPLES = 10     # consecutive low-CV readings needed to declare stuck

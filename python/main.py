@@ -112,7 +112,10 @@ def control_loop():
         # POSE comes from the motion-model + gyro odometry (NOT VO translation,
         # which drifts). Advance it using the gyro and what the navigator was
         # commanding (nav.motion is last loop's command — what actually ran).
-        dead_reck.update(nav.motion, fs.gy if fs.valid else 0.0, dt)
+        dead_reck.update(nav.motion, fs.gy if fs.valid else 0.0, dt,
+                         ax=fs.ax if fs.valid else None,
+                         ay=fs.ay if fs.valid else None,
+                         az=fs.az if fs.valid else None)
         px, py, pth = dead_reck.pose.x, dead_reck.pose.y, dead_reck.pose.theta
 
         # VO still runs for the camera overlay + person distance estimate only.
@@ -164,6 +167,8 @@ def control_loop():
         if nav.state_name == "approach":  _decision = "Approaching detected person"
         if nav.state_name == "return":    _decision = "Returning to start"
         if nav._stuck_reversing:          _decision = "STUCK — reversing to reroute"
+        if not dead_reck.physically_moving and nav.motion == "forward":
+            _decision = "WHEELS SPINNING — no movement detected"
 
         status.update({"state":nav.state_name, "speed":round(dead_reck.pose.speed,3),
             "heading":round(math.degrees(pth) % 360, 1),
@@ -181,7 +186,8 @@ def control_loop():
             "breadcrumbs":len(dead_reck.breadcrumbs),
             "head_angle":nav.servo_angle,
             "persons_confirmed":len(detector.get_confirmed()),
-            "vo_matches":vo.matches_count, "vo_inliers":vo.inliers_count})
+            "vo_matches":vo.matches_count, "vo_inliers":vo.inliers_count,
+            "physically_moving": dead_reck.physically_moving})
         time.sleep(max(0, 0.033-(time.time()-t0)))
 
 @app.route("/")
