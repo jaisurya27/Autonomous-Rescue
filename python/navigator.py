@@ -32,6 +32,7 @@ from config import (MOTOR_BASE_SPEED, MOTOR_TURN_SPEED, MOTOR_STOP,
                     SWEEP_SETTLE_S, MIN_CLEARANCE, PIVOT_STEP_TIMEOUT,
                     BACKUP_TIME, EXPLORATION_TIMEOUT,
                     STUCK_TIMEOUT, STUCK_MOVE_THRESHOLD, STUCK_REVERSE_TIME,
+                    MAX_SWEEP_ATTEMPTS, RETURN_TURN_TIMEOUT,
                     SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT, SERVO_SWEEP_ANGLES,
                     PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
 
@@ -76,6 +77,11 @@ class Navigator:
         self._stuck_ref_t   = time.time()
         self._stuck_reversing = False
         self._stuck_rev_until = 0.0
+        # sweep loop guard: counts consecutive sweeps without meaningful movement
+        self._sweep_attempts = 0
+        self._sweep_ref_pos  = (0.0, 0.0)
+        # return turn timeout
+        self._return_turn_start = None
 
     # ── transitions ──────────────────────────────────────────────────────────
 
@@ -106,6 +112,9 @@ class Navigator:
         self._stuck_ref_t     = time.time()
         self._stuck_reversing = False
         self._stuck_rev_until = 0.0
+        self._sweep_attempts  = 0
+        self._sweep_ref_pos   = (0.0, 0.0)
+        self._return_turn_start = None
         self.motion = "stop"
         self._set_servo(SERVO_CENTER)
 
@@ -152,7 +161,7 @@ class Navigator:
             return self._approach_drive(tof, us, detections, rx, ry, rtheta)
 
         # EXPLORE
-        return self._explore_drive(tof, us, rtheta, detections, cam_blocked)
+        return self._explore_drive(tof, us, rx, ry, rtheta, detections, cam_blocked)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -252,7 +261,7 @@ class Navigator:
         # if front is physically blocked (wall not person), sweep instead
         if self._is_blocked(tof, us):
             self.state = NavState.EXPLORE
-            self._start_sweep(rtheta, now)
+            self._start_sweep(rtheta, now, rx, ry)
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
@@ -268,7 +277,7 @@ class Navigator:
 
     # ── EXPLORE ───────────────────────────────────────────────────────────────
 
-    def _explore_drive(self, tof, us, rtheta, detections, cam_blocked=False):
+    def _explore_drive(self, tof, us, rx, ry, rtheta, detections, cam_blocked=False):
         now = time.time()
 
         # ── CRUISE ──
@@ -282,10 +291,12 @@ class Navigator:
                 return MOTOR_STOP, MOTOR_STOP
 
             if self._is_blocked(tof, us, cam_blocked):
-                self._start_sweep(rtheta, now)
+                self._start_sweep(rtheta, now, rx, ry)
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
 
+            # moving forward — reset sweep attempt counter
+            self._sweep_attempts = 0
             self.motion = "forward"
             return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED
 
@@ -323,6 +334,7 @@ class Navigator:
                 self._phase = "cruise"
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
+            self._sweep_attempts = 0
             self.motion = "forward"
             return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED
 
@@ -343,14 +355,27 @@ class Navigator:
 
     # ── SWEEP internals ───────────────────────────────────────────────────────
 
-    def _start_sweep(self, rtheta, now):
+    def _start_sweep(self, rtheta, now, rx=0.0, ry=0.0):
+        self._sweep_attempts += 1
+        # If we've swept MAX_SWEEP_ATTEMPTS times without moving, force a backup.
+        # Compare current position to where we were when the first sweep started.
+        moved = math.hypot(rx - self._sweep_ref_pos[0], ry - self._sweep_ref_pos[1])
+        if self._sweep_attempts == 1:
+            self._sweep_ref_pos = (rx, ry)   # anchor first sweep position
+        elif self._sweep_attempts > MAX_SWEEP_ATTEMPTS and moved < 0.08:
+            print(f"[nav] {self._sweep_attempts} sweeps without progress — forcing backup")
+            self._sweep_attempts = 0
+            self._sweep_ref_pos  = (rx, ry)
+            self._phase = "backup"
+            self._phase_t = now
+            self._set_servo(SERVO_CENTER)
+            return
         self._sweep_samples = []
         self._sweep_step = 0
         self._sweep_half = 0
         self._settle_t = None
         self._phase_t = now
         self._phase = "sweep_servo"
-        # point servo at first angle of the front sweep
         self._set_servo(_servo_pos(SERVO_SWEEP_ANGLES[0]))
 
     def _sweep_servo_step(self, tof, us, rtheta, now, rear=False):
@@ -456,14 +481,28 @@ class Navigator:
         dx, dy = tx - rx, ty - ry
         dist = math.hypot(dx, dy)
 
-        if dist < 0.12:
+        if dist < 0.15:
             self._return_idx += 1
+            self._return_turn_start = None
             self.motion = "stop"
             return MOTOR_STOP, MOTOR_STOP
 
         target_th = math.atan2(dy, dx)
         err = _ang_diff(target_th, rtheta)
-        if abs(err) > 0.35:
+
+        if abs(err) > 0.30:
+            now = time.time()
+            if self._return_turn_start is None:
+                self._return_turn_start = now
+            elif (now - self._return_turn_start) > RETURN_TURN_TIMEOUT:
+                # turn taking too long — skip this breadcrumb, try the next
+                print(f"[nav] return turn timeout — skipping breadcrumb {self._return_idx}")
+                self._return_idx += 1
+                self._return_turn_start = None
+                self.motion = "stop"
+                return MOTOR_STOP, MOTOR_STOP
             return self._pivot(+1 if err > 0 else -1)
+
+        self._return_turn_start = None
         self.motion = "forward"
         return MOTOR_BASE_SPEED, MOTOR_BASE_SPEED

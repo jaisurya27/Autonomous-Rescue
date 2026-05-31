@@ -29,7 +29,7 @@ MOTOR_TURN_SPEED = 40
 MOTOR_STOP = 0
 
 # --- Recon / obstacle avoidance ---
-US_STOP_DISTANCE      = 0.15   # front ultrasonic hard stop (m) [15 cm]
+US_STOP_DISTANCE      = 0.10   # front ultrasonic hard stop (m) [10 cm]
 TOF_STOP_DISTANCE     = 0.25   # head ToF stop when centered (m)
 SWEEP_SETTLE_S        = 0.7    # wait after each servo/pivot step before reading (longer = camera stabilises)
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
@@ -38,6 +38,8 @@ BACKUP_TIME           = 0.6    # s reverse when in a dead end
 STUCK_TIMEOUT         = 5.0    # s without meaningful movement -> force reverse+reroute
 STUCK_MOVE_THRESHOLD  = 0.04   # m — below this over STUCK_TIMEOUT = stuck
 STUCK_REVERSE_TIME    = 0.8    # s reverse when stuck is detected
+MAX_SWEEP_ATTEMPTS    = 2      # after this many sweeps without moving, force reverse
+RETURN_TURN_TIMEOUT   = 4.0    # s max time to complete a single turn during return
 # Camera path vision: analyse bottom-center strip of frame for obstacles.
 # Variance above this in the look-ahead strip = textured obstacle ahead.
 CAM_OBSTACLE_VARIANCE = 400    # tune up if false positives on textured floors

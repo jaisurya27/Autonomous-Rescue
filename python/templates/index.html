@@ -49,6 +49,11 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
 .person .pc{font-size:10px;color:var(--tx);margin-top:3px;line-height:1.5}
 .person .pc span{color:var(--tx2)}
 .no-persons{font-size:10px;color:var(--tx2);font-style:italic}
+.decision-box{background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;margin-bottom:2px}
+.decision-label{font-size:9px;color:var(--tx2);text-transform:uppercase;letter-spacing:1px}
+.decision-text{font-size:12px;color:var(--ac);margin-top:2px;font-weight:500}
+.decision-sub{font-size:10px;color:var(--tx2);margin-top:2px}
+.cam-blocked{color:var(--rd)}.cam-clear{color:var(--gn)}
 </style>
 </head>
 <body>
@@ -81,17 +86,22 @@ font-family:inherit;font-size:10px;cursor:pointer;text-transform:uppercase;lette
     <button class="btn" onclick="doAction('return')">Return</button>
     <button class="btn" onclick="doAction('stop')">Stop</button>
   </div>
+  <h2>Decision</h2>
+  <div class="decision-box">
+    <div class="decision-label">Current action</div>
+    <div class="decision-text" id="dDecision">—</div>
+    <div class="decision-sub" id="dSub">—</div>
+  </div>
   <h2>Telemetry</h2>
   <div class="mg">
     <div class="m"><div class="ml">Heading</div><div class="mv" id="sH">0</div></div>
     <div class="m"><div class="ml">Speed</div><div class="mv" id="sS">0</div></div>
     <div class="m"><div class="ml">Traveled</div><div class="mv" id="sD">0m</div></div>
     <div class="m"><div class="ml">To start</div><div class="mv" id="sR">0m</div></div>
-    <div class="m"><div class="ml">Ultrasonic</div><div class="mv" id="sU">—</div></div>
+    <div class="m"><div class="ml">US</div><div class="mv" id="sU">—</div></div>
+    <div class="m"><div class="ml">ToF</div><div class="mv" id="sTof">—</div></div>
     <div class="m"><div class="ml">Threats</div><div class="mv" id="sT">0</div></div>
     <div class="m"><div class="ml">FPS</div><div class="mv" id="sF">0</div></div>
-    <div class="m"><div class="ml">VO matches</div><div class="mv" id="sM">0</div></div>
-    <div class="m"><div class="ml">VO inliers</div><div class="mv" id="sI">0</div></div>
   </div>
   <h2>Persons Found</h2>
   <div class="persons" id="persons"><div class="no-persons">None yet — exploring…</div></div>
@@ -313,15 +323,22 @@ async function pollMap() {
 async function pollStatus() {
   try {
     const r = await fetch('/api/status'); const s = await r.json();
-    document.getElementById('sH').textContent = s.heading + '\u00B0';
+    // decision feed
+    document.getElementById('dDecision').textContent = s.decision || '—';
+    const camTxt = s.cam_blocked ? 'Camera: BLOCKED' : 'Camera: clear';
+    const usTxt  = 'US: ' + (s.us ?? '—') + 'cm  ToF: ' + (s.tof ?? '—') + 'cm';
+    const swTxt  = s.sweep_attempts > 0 ? '  Sweeps: ' + s.sweep_attempts : '';
+    document.getElementById('dSub').textContent = camTxt + '  |  ' + usTxt + swTxt;
+    document.getElementById('dSub').className = s.cam_blocked ? 'decision-sub cam-blocked' : 'decision-sub cam-clear';
+    // telemetry
+    document.getElementById('sH').textContent = s.heading + '°';
     document.getElementById('sS').textContent = s.speed;
     document.getElementById('sD').textContent = s.distance_traveled + 'm';
     document.getElementById('sR').textContent = s.distance_to_start + 'm';
     document.getElementById('sU').textContent = s.us != null ? s.us + 'cm' : '—';
+    document.getElementById('sTof').textContent = s.tof != null ? s.tof + 'cm' : '—';
     document.getElementById('sT').textContent = s.detections;
     document.getElementById('sF').textContent = Math.round(s.fps);
-    document.getElementById('sM').textContent = s.vo_matches || 0;
-    document.getElementById('sI').textContent = s.vo_inliers || 0;
     const sl = document.getElementById('stL');
     sl.textContent = s.state; sl.className = 'state ' + s.state;
   } catch(e) {}

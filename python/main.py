@@ -148,13 +148,32 @@ def control_loop():
         lc += 1; now = time.time()
         if now - ft >= 1.0:
             status["fps"] = round(lc/(now-ft),1); lc = 0; ft = now
+        # Build a human-readable decision string for the dashboard feed
+        _phase = nav._phase
+        _decision = {
+            "cruise":       "Cruising forward",
+            "sweep_servo":  "Scanning with camera (servo sweep)",
+            "sweep_pivot":  "Rotating 180° to scan rear",
+            "sweep_rear":   "Scanning rear with camera",
+            "commit":       "Turning to best heading",
+            "advance":      "Advancing on chosen heading",
+            "backup":       "Reversing — dead end",
+        }.get(_phase, _phase)
+        if nav.state_name == "approach":  _decision = "Approaching detected person"
+        if nav.state_name == "return":    _decision = "Returning to start"
+        if nav._stuck_reversing:          _decision = "STUCK — reversing to reroute"
+
         status.update({"state":nav.state_name, "speed":round(dead_reck.pose.speed,3),
             "heading":round(math.degrees(pth) % 360, 1),
             "us":round(fs.us_distance * 100, 1) if fs.valid else 0,
+            "tof":round(fs.tof_distance * 100, 1) if fs.valid else 0,
+            "cam_blocked": path_vision.path_blocked,
+            "phase": _phase,
+            "decision": _decision,
+            "sweep_attempts": nav._sweep_attempts,
             "distance_traveled":round(dead_reck.total_distance,2),
             "distance_to_start":round(dead_reck.distance_to_start(),2),
             "detections":len(occ_grid.threats),
-            "tof":round(fs.tof_distance,3) if fs.valid else 0,
             "imu_gz":round(fs.gy,2) if fs.valid else 0,
             "breadcrumbs":len(dead_reck.breadcrumbs),
             "head_angle":nav.servo_angle,
