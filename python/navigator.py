@@ -21,11 +21,13 @@ import math, time
 from enum import Enum
 from config import (MOTOR_BASE_SPEED, MOTOR_SLOW_SPEED, MOTOR_TURN_SPEED, MOTOR_REVERSE_SPEED, MOTOR_STOP,
                     TOF_STOP_DISTANCE, TOF_WARN_DISTANCE, RETURN_TOF_STOP,
+                    US_STOP_DISTANCE,
                     SWEEP_SETTLE_S, MIN_CLEARANCE, PIVOT_STEP_TIMEOUT,
                     BACKUP_TIME, EXPLORATION_TIMEOUT,
                     STUCK_TIMEOUT, STUCK_MOVE_THRESHOLD, STUCK_REVERSE_TIME,
                     MAX_SWEEP_ATTEMPTS, RETURN_TURN_TIMEOUT,
                     SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT, SERVO_BEARING_SIGN,
+                    CAR_SURVEY_OFFSETS, SERVO_SCAN_STEP_DEG, SERVO_SCAN_INTERVAL,
                     PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
 
 HEADING_TOLERANCE    = math.radians(15)
@@ -89,6 +91,15 @@ class Navigator:
         self._cam_right_score  = 0.5
         self._cam_center_score = 0.5
 
+        # survey / sweep mode
+        self._active_sweep_offsets = CAR_SWEEP_OFFSETS   # swapped to CAR_SURVEY_OFFSETS for full scan
+        self._sweep_full           = False               # True = 360°, skip back-exclusion in finish
+        self._pending_survey       = False               # triggers full survey on next cruise tick
+
+        # cruise servo scan
+        self._cruise_servo_dir = 1      # +1 = toward SERVO_LEFT, -1 = toward SERVO_RIGHT
+        self._servo_scan_t     = 0.0    # last time servo was stepped
+
         # return
         self._return_path          = []
         self._return_idx           = 0
@@ -103,6 +114,7 @@ class Navigator:
         self._reset()
         self.state = NavState.EXPLORE
         self._explore_start = time.time()
+        self._pending_survey = True   # do a full 360° survey before the first move
 
     def start_return(self, breadcrumbs=None):
         self._reset()
@@ -139,6 +151,11 @@ class Navigator:
         self._return_turn_start    = None
         self._return_dodge_until   = 0.0
         self._return_advance_until = 0.0
+        self._active_sweep_offsets = CAR_SWEEP_OFFSETS
+        self._sweep_full           = False
+        self._pending_survey       = False
+        self._cruise_servo_dir     = 1
+        self._servo_scan_t         = 0.0
         self.motion                = "stop"
         self._set_servo(SERVO_CENTER)
 
@@ -203,13 +220,16 @@ class Navigator:
         self.motion = "stop"
         return -MOTOR_REVERSE_SPEED, -MOTOR_REVERSE_SPEED
 
-    def _is_blocked(self, tof, _us=None):
-        """ToF is the sole obstacle sensor. It's on the pan head so it reads
-        in whatever direction the servo is currently pointing."""
-        return 0.01 < tof < TOF_STOP_DISTANCE
+    def _is_blocked(self, tof, us=None):
+        """ToF is on the servo head. When panned off-centre, use US (body-fixed)
+        as an additional forward guard so the car doesn't miss a wall ahead."""
+        tof_hit = 0.01 < tof < TOF_STOP_DISTANCE
+        servo_panned = abs(self.servo_angle - SERVO_CENTER) > 20
+        us_hit = servo_panned and us is not None and 0.01 < us < US_STOP_DISTANCE
+        return tof_hit or us_hit
 
-    def _front_clearance(self, tof, _us=None):
-        """Distance reading from ToF. 0 or invalid → treat as open (99 m)."""
+    def _front_clearance(self, tof, us=None):
+        """Best forward clearance: ToF in pan direction, clipped to 99 m for invalid."""
         return tof if tof > 0.01 else 99.0
 
     # ── stuck detection ───────────────────────────────────────────────────────
@@ -220,7 +240,7 @@ class Navigator:
             if now < self._stuck_rev_until:
                 return self._reverse()
             self._stuck_reversing = False
-            self._start_sweep(self._rtheta, rx, ry)
+            self._start_sweep(self._rtheta, rx, ry, full=True)
             self._stuck_ref_pos = (rx, ry)
             self._stuck_ref_t   = now
             return None
@@ -280,24 +300,42 @@ class Navigator:
 
         # ── CRUISE ──────────────────────────────────────────────────────────
         if self._phase == "cruise":
+            # Full 360° survey requested (start of exploration or after stuck-backup)
+            if self._pending_survey:
+                self._pending_survey = False
+                self._start_sweep(rtheta, rx, ry, full=True)
+                return MOTOR_STOP, MOTOR_STOP
+
             if detections:
                 self.state = NavState.APPROACH
                 self._set_servo(SERVO_CENTER)
                 self.motion = "stop"
                 return MOTOR_STOP, MOTOR_STOP
 
-            # Hard stop: ToF within stop threshold
+            # Hard stop: ToF within stop threshold (also guards with US when servo panned)
             if self._is_blocked(tof, us):
                 self._start_sweep(rtheta, rx, ry)
                 return MOTOR_STOP, MOTOR_STOP
 
             # Graduated slow-down: scale speed between warn and stop distances.
-            # Camera signal is soft-only and does NOT trigger a sweep.
             if 0.01 < tof < TOF_WARN_DISTANCE:
                 factor = (tof - TOF_STOP_DISTANCE) / (TOF_WARN_DISTANCE - TOF_STOP_DISTANCE)
                 speed = max(MOTOR_SLOW_SPEED, int(MOTOR_BASE_SPEED * max(0.0, min(1.0, factor))))
+                # Snap servo to centre when approaching so ToF reads forward accurately
+                self._set_servo(SERVO_CENTER)
             else:
                 speed = MOTOR_BASE_SPEED
+                # Slowly oscillate servo for wider occupancy-grid coverage while cruising.
+                if now - self._servo_scan_t >= SERVO_SCAN_INTERVAL:
+                    self._servo_scan_t = now
+                    new_angle = self.servo_angle + self._cruise_servo_dir * SERVO_SCAN_STEP_DEG
+                    if new_angle >= SERVO_LEFT:
+                        new_angle = SERVO_LEFT
+                        self._cruise_servo_dir = -1
+                    elif new_angle <= SERVO_RIGHT:
+                        new_angle = SERVO_RIGHT
+                        self._cruise_servo_dir = 1
+                    self._set_servo(int(new_angle))
 
             self._sweep_attempts = 0
             self.motion = "forward"
@@ -345,8 +383,9 @@ class Navigator:
         if self._phase == "backup":
             if now < self._backup_until:
                 return self._reverse()
-            # after backing up: sweep from new position
-            self._start_sweep(rtheta, rx, ry)
+            # After backing up, do a full 360° survey — need to understand the new
+            # position fully before committing to another direction.
+            self._start_sweep(rtheta, rx, ry, full=True)
             return MOTOR_STOP, MOTOR_STOP
 
         # fallback
@@ -356,7 +395,10 @@ class Navigator:
 
     # ── SWEEP internals ───────────────────────────────────────────────────────
 
-    def _start_sweep(self, rtheta, rx, ry):
+    def _start_sweep(self, rtheta, rx, ry, full=False):
+        """Start a sweep. full=True → full 360° survey (CAR_SURVEY_OFFSETS, no back-exclusion).
+        Normal sweep is 3-position (L/C/R). Full survey is used at exploration start
+        and after backing up, to properly understand the environment before committing."""
         now = time.time()
         self._sweep_attempts += 1
         moved = math.hypot(rx - self._sweep_ref_pos[0], ry - self._sweep_ref_pos[1])
@@ -364,7 +406,7 @@ class Navigator:
         if self._sweep_attempts == 1:
             self._sweep_ref_pos = (rx, ry)
         elif self._sweep_attempts >= MAX_SWEEP_ATTEMPTS and moved < 0.08:
-            print(f"[nav] {self._sweep_attempts} sweeps no progress — backing up")
+            print(f"[nav] {self._sweep_attempts} sweeps, no progress → backing up")
             self._sweep_attempts = 0
             self._sweep_ref_pos  = (rx, ry)
             self._phase          = "backup"
@@ -373,26 +415,26 @@ class Navigator:
             self._set_servo(SERVO_CENTER)
             return
 
+        offsets = CAR_SURVEY_OFFSETS if full else CAR_SWEEP_OFFSETS
+        self._active_sweep_offsets = offsets
+        self._sweep_full  = full
         self._sweep_samples  = []
-        self._sweep_step     = 0    # which car rotation (0=LEFT90, 1=CENTER, 2=RIGHT90)
-        self._servo_step     = 0    # which servo pan within current car step
+        self._sweep_step     = 0
+        self._servo_step     = 0
         self._sweep_start_h  = rtheta
         self._settle_t       = None
         self._phase          = "sweep"
         self._phase_t        = now
         self._step_start_t   = now
-        # start by turning car LEFT 90°
-        self._sweep_target_h = _wrap(rtheta + math.radians(CAR_SWEEP_OFFSETS[0]))
+        self._sweep_target_h = _wrap(rtheta + math.radians(offsets[0]))
         self.motion = "stop"
 
     def _sweep_step_exec(self, tof, us, rtheta, now, rx, ry):
-        """3 car rotations × 3 servo positions = 9 viewpoints.
-        Car rotates to LEFT-90 / CENTER / RIGHT-90.
-        At each car position, servo pans LEFT / CENTER / RIGHT.
-        US clearance is used when servo is centered; camera scores when panned.
-        Picks the world heading with the best combined score.
+        """N car rotations × 3 servo positions = 3N samples.
+        Normal sweep: LEFT-90 / CENTER / RIGHT-90 (9 samples).
+        Full survey:  0 / +90 / +180 / -90 (12 samples, covers full 360°).
         """
-        if self._sweep_step >= len(CAR_SWEEP_OFFSETS):
+        if self._sweep_step >= len(self._active_sweep_offsets):
             self._finish_sweep(rtheta, now)
             return MOTOR_STOP, MOTOR_STOP
 
@@ -449,9 +491,9 @@ class Navigator:
         self._sweep_step  += 1
         self._step_start_t = now
 
-        if self._sweep_step < len(CAR_SWEEP_OFFSETS):
+        if self._sweep_step < len(self._active_sweep_offsets):
             self._sweep_target_h = _wrap(
-                self._sweep_start_h + math.radians(CAR_SWEEP_OFFSETS[self._sweep_step])
+                self._sweep_start_h + math.radians(self._active_sweep_offsets[self._sweep_step])
             )
             self._settle_t = now   # brief settle before next car rotation
 
@@ -463,14 +505,19 @@ class Navigator:
             self._phase = "cruise"
             return
 
-        # exclude headings within 30° of where we came from (back direction)
-        back_h = _wrap(self._sweep_start_h + math.pi)
-        candidates = [
-            (h, c) for h, c in self._sweep_samples
-            if abs(_ang_diff(h, back_h)) > math.radians(30)
-        ]
-        if not candidates:
-            candidates = self._sweep_samples  # nothing excluded, use all
+        # For a full 360° survey every direction was intentionally sampled, so use all.
+        # For a 3-position obstacle sweep, exclude headings within 30° of where we came
+        # from to avoid the car immediately turning back into the obstacle.
+        if self._sweep_full:
+            candidates = self._sweep_samples
+        else:
+            back_h = _wrap(self._sweep_start_h + math.pi)
+            candidates = [
+                (h, c) for h, c in self._sweep_samples
+                if abs(_ang_diff(h, back_h)) > math.radians(30)
+            ]
+            if not candidates:
+                candidates = self._sweep_samples
 
         # Only commit to a heading that is genuinely driveable.
         # Score > 0.35 means the raw ToF was >= TOF_STOP_DISTANCE (0.20m).

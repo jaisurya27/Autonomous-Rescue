@@ -53,6 +53,14 @@ PERSON_BBOX_CLOSE_PX  = 180    # bbox height in px = "close enough" (fallback)
 # 360 sweep: servo covers ±90 deg (3 samples), car pivots 180 for the other side
 SERVO_SWEEP_ANGLES    = [-90, 0, 90]   # degrees from center; servo pans these
 
+# Full 360° survey: 4 car body rotations × 3 servo pans = 12 samples
+# Used on exploration start and after stuck-backup to understand surroundings before moving.
+CAR_SURVEY_OFFSETS = [0, 90, 180, -90]  # forward, left, back, right from start heading
+
+# Servo scanning while cruising forward (builds occupancy grid)
+SERVO_SCAN_STEP_DEG  = 15    # degrees per scan step
+SERVO_SCAN_INTERVAL  = 0.18  # seconds between steps (≈5-6 Hz, smooth but not jittery)
+
 # --- Motion-model odometry (replaces drifting VO translation) ---
 CRUISE_SPEED_MPS   = 0.20   # forward speed at MOTOR_BASE_SPEED (CALIBRATE to your car)
 GYRO_BIAS_SAMPLES  = 20     # rest samples to zero gyro drift at exploration start
@@ -67,7 +75,7 @@ SERVO_RIGHT  = 30
 SERVO_SETTLE_S = 0.45
 # Sign: looking LEFT (servo>90) should add a POSITIVE bearing (CCW). If your
 # head is geared so 150 actually points right, set this to -1.
-SERVO_BEARING_SIGN = 1.0
+SERVO_BEARING_SIGN = -1.0   # flip to +1.0 if turns still go the wrong way
 
 # Heading source: your Movement gyro is on the PITCH axis (vertical mount)
 # gx=roll, gy=pitch, gz=yaw  -> we use gy as turn-rate.
