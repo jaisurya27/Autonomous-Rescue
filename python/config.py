@@ -34,15 +34,16 @@ TOF_STOP_DISTANCE     = 0.25   # head ToF stop when centered (m)
 SWEEP_SETTLE_S        = 0.7    # wait after each servo/pivot step before reading (longer = camera stabilises)
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
 PIVOT_STEP_TIMEOUT    = 3.0    # s, safety cap per pivot step (longer at low turn speed)
-BACKUP_TIME           = 0.6    # s reverse when in a dead end
+BACKUP_TIME           = 1.2    # s reverse (slow) on dead end / stuck
+MOTOR_REVERSE_SPEED   = 35     # slow reverse speed (less than cruise)
 STUCK_TIMEOUT         = 5.0    # s without meaningful movement -> force reverse+reroute
 STUCK_MOVE_THRESHOLD  = 0.04   # m — below this over STUCK_TIMEOUT = stuck
-STUCK_REVERSE_TIME    = 0.8    # s reverse when stuck is detected
+STUCK_REVERSE_TIME    = 1.5    # s reverse when stuck is detected (longer = more clearance)
 MAX_SWEEP_ATTEMPTS    = 2      # after this many sweeps without moving, force reverse
-RETURN_TURN_TIMEOUT   = 4.0    # s max time to complete a single turn during return
-# Camera path vision: analyse bottom-center strip of frame for obstacles.
-# Variance above this in the look-ahead strip = textured obstacle ahead.
-CAM_OBSTACLE_VARIANCE = 400    # tune up if false positives on textured floors
+RETURN_TURN_TIMEOUT   = 4.0    # s max time to complete one turn step during return
+RETURN_US_STOP        = 0.10   # obstacle threshold during return (m)
+# Camera path vision: only for person detection overlays, NOT for obstacle stop.
+CAM_OBSTACLE_VARIANCE = 400    # kept for PathVision display, no longer triggers sweep
 # Person approach
 PERSON_APPROACH_DIST  = 0.30   # stop this close to a detected person (m)
 PERSON_BBOX_CLOSE_PX  = 180    # bbox height in px = "close enough" (fallback)

@@ -151,13 +151,11 @@ def control_loop():
         # Build a human-readable decision string for the dashboard feed
         _phase = nav._phase
         _decision = {
-            "cruise":       "Cruising forward",
-            "sweep_servo":  "Scanning with camera (servo sweep)",
-            "sweep_pivot":  "Rotating 180° to scan rear",
-            "sweep_rear":   "Scanning rear with camera",
-            "commit":       "Turning to best heading",
-            "advance":      "Advancing on chosen heading",
-            "backup":       "Reversing — dead end",
+            "cruise":   "Cruising forward",
+            "sweep":    "Scanning L/C/R for open path",
+            "commit":   "Turning to best heading",
+            "advance":  "Advancing on chosen heading",
+            "backup":   "Reversing — no clear path",
         }.get(_phase, _phase)
         if nav.state_name == "approach":  _decision = "Approaching detected person"
         if nav.state_name == "return":    _decision = "Returning to start"
@@ -227,10 +225,7 @@ def action():
             vo.x = vo.y = vo.theta = 0.0
             nav.start_exploration()
         elif act == "return":
-            if len(dead_reck.breadcrumbs) > 1:
-                nav.start_return(dead_reck.breadcrumbs)
-            else:
-                nav.stop()               # nowhere to return to — just stop
+            nav.start_return()    # heads toward (0,0) — no breadcrumbs needed
         elif act == "stop":
             nav.stop()
     # always send a stop command immediately so MCU doesn't coast
