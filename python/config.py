@@ -6,9 +6,13 @@ ACCEL_BIAS_Y = 0.0
 GYRO_BIAS_Z  = 0.0
 
 # Occupancy grid
+# 400×400 @ 0.05 m = 20 m × 20 m (±10 m from start). A 200-cell grid was only
+# ±5 m and real runs exceed 10 m traveled, pushing the rover off the grid which
+# collapsed the dashboard map. Only the cropped window is sent to the browser,
+# so the larger grid does not bloat the API payload.
 GRID_RESOLUTION = 0.05
-GRID_WIDTH = 200
-GRID_HEIGHT = 200
+GRID_WIDTH = 400
+GRID_HEIGHT = 400
 START_X = GRID_WIDTH // 2
 START_Y = GRID_HEIGHT // 2
 L_FREE = -0.4

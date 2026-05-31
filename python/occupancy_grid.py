@@ -83,21 +83,35 @@ class OccupancyGrid:
 
     def get_map_data_for_web(self, robot_gx, robot_gy, robot_theta):
         MIN_HALF = 25   # always show at least 50×50 cells centred on robot
+        # Clamp the robot into the grid first. If pose drifts off-grid, an
+        # unclamped value produced a degenerate (thin-strip) crop window and the
+        # dashboard map collapsed. Clamping keeps the window valid.
+        robot_gx = max(0, min(GRID_WIDTH - 1, int(robot_gx)))
+        robot_gy = max(0, min(GRID_HEIGHT - 1, int(robot_gy)))
         visited_coords = np.argwhere(self.visited)
         if len(visited_coords) == 0:
-            x0 = max(0, robot_gx - MIN_HALF); x1 = min(GRID_WIDTH,  robot_gx + MIN_HALF)
-            y0 = max(0, robot_gy - MIN_HALF); y1 = min(GRID_HEIGHT, robot_gy + MIN_HALF)
+            x0 = robot_gx - MIN_HALF; x1 = robot_gx + MIN_HALF
+            y0 = robot_gy - MIN_HALF; y1 = robot_gy + MIN_HALF
         else:
             m = 10
-            y0 = max(0, int(visited_coords[:,0].min()) - m)
-            y1 = min(GRID_HEIGHT, int(visited_coords[:,0].max()) + m)
-            x0 = max(0, int(visited_coords[:,1].min()) - m)
-            x1 = min(GRID_WIDTH, int(visited_coords[:,1].max()) + m)
+            y0 = int(visited_coords[:,0].min()) - m
+            y1 = int(visited_coords[:,0].max()) + m
+            x0 = int(visited_coords[:,1].min()) - m
+            x1 = int(visited_coords[:,1].max()) + m
             # enforce minimum size centred on robot so it's always visible
             if (x1 - x0) < MIN_HALF * 2:
-                x0 = max(0, robot_gx - MIN_HALF); x1 = min(GRID_WIDTH, robot_gx + MIN_HALF)
+                x0 = robot_gx - MIN_HALF; x1 = robot_gx + MIN_HALF
             if (y1 - y0) < MIN_HALF * 2:
-                y0 = max(0, robot_gy - MIN_HALF); y1 = min(GRID_HEIGHT, robot_gy + MIN_HALF)
+                y0 = robot_gy - MIN_HALF; y1 = robot_gy + MIN_HALF
+        # Slide the window fully inside the grid (preserving its width/height so
+        # it never collapses to a thin strip), then clamp as a final safety net.
+        def _fit(a, b, limit):
+            span = min(b - a, limit)
+            if a < 0:        a, b = 0, span
+            elif b > limit:  a, b = limit - span, limit
+            return max(0, a), max(a + 1, min(limit, b))
+        x0, x1 = _fit(x0, x1, GRID_WIDTH)
+        y0, y1 = _fit(y0, y1, GRID_HEIGHT)
         cropped = self.grid[y0:y1, x0:x1]
         # clip before exp() so a runaway log-odds value can't overflow to inf/NaN
         prob = 1.0 - 1.0 / (1.0 + np.exp(np.clip(cropped, L_MIN, L_MAX)))
