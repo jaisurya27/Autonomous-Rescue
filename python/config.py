@@ -68,7 +68,7 @@ SERVO_SCAN_INTERVAL  = 0.18  # seconds between steps (≈5-6 Hz, smooth but not 
 # --- Motion-model odometry (replaces drifting VO translation) ---
 CRUISE_SPEED_MPS   = 0.20   # forward speed at MOTOR_BASE_SPEED (CALIBRATE to your car)
 GYRO_BIAS_SAMPLES  = 20     # rest samples to zero gyro drift at exploration start
-GYRO_SIGN          = -1.0   # flip to +1.0 if map directions are mirrored
+GYRO_SIGN          = 1.0    # flip to -1.0 if map directions are mirrored
 
 # Servo scan (your pan head) — used for smart deflection.
 # Camera + ToF are both on this head, so panning aims both.
@@ -111,8 +111,8 @@ IMU_SAMPLE_RATE = 50
 # the car is physically not moving (stuck against obstacle).
 # CoV = σ/μ is unit-agnostic: works for both g and m/s² IMU outputs.
 ACCEL_VAR_WINDOW    = 20     # rolling window length (samples, ≈ 0.4 s at 50 Hz)
-ACCEL_STUCK_CV      = 0.001  # (var_ax + var_az) / g² below this → stuck
-                              # moving RC car ~0.003–0.006, stuck ~0.00001–0.0004
-                              # watch [dr] log lines to see real cv on your surface
-                              # tune DOWN toward 0.0005 if false positives while moving
+ACCEL_STUCK_CV      = 0.0    # set > 0 to enable IMU-based stuck detection
+                              # (disabled by default — smooth floors trigger false positives)
+                              # suggested starting value once you want to try it: 0.001
+                              # watch [dr] log lines to see real cv on your surface first
 ACCEL_STUCK_SAMPLES = 10     # consecutive low-CV readings needed to declare stuck
