@@ -36,6 +36,8 @@ TOF_WARN_DISTANCE     = 0.45   # ToF slow-down zone (m): car decelerates between
 RETURN_TOF_STOP       = 0.20   # ToF obstacle threshold during return
 SWEEP_SETTLE_S        = 0.7    # wait after each servo/pivot step before reading (longer = camera stabilises)
 MIN_CLEARANCE         = 0.10   # if best clearance everywhere below this -> dead end
+GREEDY_COMMIT_SCORE   = 3.5    # commit immediately during sweep if any direction scores this high
+                                # (avoids waiting for all samples when path is obviously clear)
 PIVOT_STEP_TIMEOUT    = 4.0    # s, safety cap per pivot step
 BACKUP_TIME           = 1.8    # s reverse on dead end / stuck (longer = more clearance gained)
 MOTOR_REVERSE_SPEED   = 65     # reverse speed (needs more than stall ~45, more than forward)

@@ -28,6 +28,7 @@ from config import (MOTOR_BASE_SPEED, MOTOR_SLOW_SPEED, MOTOR_TURN_SPEED, MOTOR_
                     MAX_SWEEP_ATTEMPTS, RETURN_TURN_TIMEOUT,
                     SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT, SERVO_BEARING_SIGN,
                     CAR_SURVEY_OFFSETS, SERVO_SCAN_STEP_DEG, SERVO_SCAN_INTERVAL,
+                    GREEDY_COMMIT_SCORE,
                     PERSON_APPROACH_DIST, PERSON_BBOX_CLOSE_PX)
 
 HEADING_TOLERANCE    = math.radians(15)
@@ -36,9 +37,15 @@ MOTOR_APPROACH_SPEED = 35
 # Car rotation steps during sweep (degrees from heading at sweep start).
 CAR_SWEEP_OFFSETS = [90, 0, -90]   # LEFT 90, CENTER, RIGHT 90
 
-# Servo pan angles for each car position (absolute servo degrees).
-# At each car angle the head pans LEFT, CENTER, RIGHT to give 3 camera samples.
-SERVO_SWEEP_POS = [SERVO_LEFT, SERVO_CENTER, SERVO_RIGHT]
+# Servo pan order during each car position.
+# ±30° positions are checked FIRST so that a small obstacle (box, debris) gets
+# a shallow bypass angle committed immediately via greedy-commit, without ever
+# needing the car to rotate.  ±60° and centre are checked after as fallback.
+SERVO_SWEEP_POS = [120, 60, SERVO_LEFT, SERVO_RIGHT, SERVO_CENTER]
+#  with SERVO_BEARING_SIGN = -1.0 these map to world offsets:
+#  120 → -30° (right 30°),  60 → +30° (left 30°),
+#  150 → -60° (right 60°),  30 → +60° (left 60°),
+#   90 →   0° (straight, usually blocked when sweeping)
 
 class NavState(Enum):
     IDLE="idle"; EXPLORE="explore"; APPROACH="approach"; RETURN="return"; ARRIVED="arrived"
@@ -476,6 +483,21 @@ class Navigator:
             score = min(tof_raw, 3.0) + self._cam_center_score * 2.0
 
         self._sweep_samples.append((world_h, score))
+
+        # ── Greedy commit: act immediately on the first clearly-open direction ──
+        # Don't wait for all N samples — if this direction is definitively clear,
+        # commit now. Exclude backward direction to avoid turning around needlessly.
+        back_h = _wrap(self._sweep_start_h + math.pi)
+        not_backward = abs(_ang_diff(world_h, back_h)) > math.radians(30)
+        if score >= GREEDY_COMMIT_SCORE and not_backward:
+            print(f"[nav] greedy commit → {math.degrees(world_h):.0f}° (score={score:.1f})")
+            self._commit_target = world_h
+            self._phase_t       = now
+            self._phase         = "commit"
+            self._sweep_samples = []   # discard partial samples
+            self._set_servo(SERVO_CENTER)
+            self.motion = "stop"
+            return MOTOR_STOP, MOTOR_STOP
 
         self._servo_step += 1
         self._settle_t    = None
